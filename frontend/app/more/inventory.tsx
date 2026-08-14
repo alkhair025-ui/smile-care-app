@@ -10,28 +10,28 @@ export default function Inventory() {
   const router = useRouter();
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showAdd, setShowAdd] = useState(false);
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState<any>(null);
+  const [menuItem, setMenuItem] = useState<any>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try { setItems(await api.listInventory()); } finally { setLoading(false); }
   }, []);
-
   useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  const onDelete = async (it: any) => { setMenuItem(null); await api.deleteInventory(it.id); load(); };
 
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
       <View style={styles.header}>
         <Pressable onPress={() => router.back()} hitSlop={8}><Feather name="chevron-right" size={26} color={colors.onSurface} /></Pressable>
         <Text style={styles.headerTitle}>المستودع</Text>
-        <Pressable testID="add-inv-btn" onPress={() => setShowAdd(true)} style={styles.addBtn}><Feather name="plus" size={20} color="#fff" /></Pressable>
+        <Pressable testID="add-inv-btn" onPress={() => { setEditing(null); setShowForm(true); }} style={styles.addBtn}><Feather name="plus" size={20} color="#fff" /></Pressable>
       </View>
 
-      {loading ? (
-        <View style={styles.center}><ActivityIndicator color={colors.brand} /></View>
-      ) : items.length === 0 ? (
-        <View style={styles.center}><Feather name="package" size={48} color={colors.borderStrong} /><Text style={styles.empty}>لا توجد مواد</Text></View>
-      ) : (
+      {loading ? <View style={styles.center}><ActivityIndicator color={colors.brand} /></View> :
+        items.length === 0 ? <View style={styles.center}><Feather name="package" size={48} color={colors.borderStrong} /><Text style={styles.empty}>لا توجد مواد</Text></View> :
         <FlatList
           data={items}
           keyExtractor={(i) => i.id}
@@ -48,36 +48,58 @@ export default function Inventory() {
                   <Text style={styles.meta}>{item.category} · {item.quantity} {item.unit}</Text>
                 </View>
                 {low && <View style={styles.lowChip}><Text style={styles.lowText}>ناقص</Text></View>}
+                <Pressable testID={`inv-menu-${item.id}`} onPress={() => setMenuItem(item)} hitSlop={8}><Feather name="more-vertical" size={18} color={colors.muted} /></Pressable>
               </View>
             );
           }}
         />
-      )}
+      }
 
-      <AddInventoryModal visible={showAdd} onClose={() => setShowAdd(false)} onCreated={() => { setShowAdd(false); load(); }} />
+      <InventoryFormModal editing={editing} visible={showForm} onClose={() => setShowForm(false)} onSaved={() => { setShowForm(false); load(); }} />
+
+      <Modal visible={!!menuItem} transparent animationType="fade" onRequestClose={() => setMenuItem(null)}>
+        <Pressable style={styles.menuOverlay} onPress={() => setMenuItem(null)}>
+          <View style={styles.menuSheet}>
+            <Pressable testID="inv-edit-btn" onPress={() => { setEditing(menuItem); setMenuItem(null); setShowForm(true); }} style={styles.menuItem}>
+              <Feather name="edit-2" size={18} color={colors.brand} /><Text style={styles.menuText}>تعديل المادة</Text>
+            </Pressable>
+            <Pressable testID="inv-delete-btn" onPress={() => onDelete(menuItem)} style={styles.menuItem}>
+              <Feather name="trash-2" size={18} color={colors.error} /><Text style={[styles.menuText, { color: colors.error }]}>حذف المادة</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
 
-function AddInventoryModal({ visible, onClose, onCreated }: any) {
-  const [form, setForm] = useState<any>({ name: '', unit: 'قطعة', category: 'عام', quantity: '0', min_quantity: '5', unit_price: '0' });
+function InventoryFormModal({ editing, visible, onClose, onSaved }: any) {
+  const empty = { name: '', unit: 'قطعة', category: 'عام', quantity: '0', min_quantity: '5', unit_price: '0' };
+  const [form, setForm] = useState<any>(empty);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
   const upd = (k: string, v: string) => setForm((f: any) => ({ ...f, [k]: v }));
+
+  React.useEffect(() => {
+    if (visible) {
+      if (editing) setForm({ name: editing.name, unit: editing.unit, category: editing.category, quantity: String(editing.quantity), min_quantity: String(editing.min_quantity), unit_price: String(editing.unit_price) });
+      else setForm(empty);
+      setErr('');
+    }
+  }, [visible, editing]);
 
   const submit = async () => {
     setErr('');
     if (!form.name.trim()) { setErr('الاسم مطلوب'); return; }
     setLoading(true);
     try {
-      await api.createInventory({
+      const payload = {
         name: form.name, unit: form.unit, category: form.category,
-        quantity: parseFloat(form.quantity) || 0,
-        min_quantity: parseFloat(form.min_quantity) || 0,
-        unit_price: parseFloat(form.unit_price) || 0,
-      });
-      setForm({ name: '', unit: 'قطعة', category: 'عام', quantity: '0', min_quantity: '5', unit_price: '0' });
-      onCreated();
+        quantity: parseFloat(form.quantity) || 0, min_quantity: parseFloat(form.min_quantity) || 0, unit_price: parseFloat(form.unit_price) || 0,
+      };
+      if (editing) await api.updateInventory(editing.id, payload);
+      else await api.createInventory(payload);
+      onSaved();
     } catch (e: any) { setErr(e.message); } finally { setLoading(false); }
   };
 
@@ -87,27 +109,15 @@ function AddInventoryModal({ visible, onClose, onCreated }: any) {
         <View style={styles.modalSheet}>
           <View style={styles.modalHeader}>
             <Pressable onPress={onClose} hitSlop={8}><Feather name="x" size={22} color={colors.onSurface} /></Pressable>
-            <Text style={styles.modalTitle}>إضافة مادة</Text>
+            <Text style={styles.modalTitle}>{editing ? 'تعديل مادة' : 'إضافة مادة'}</Text>
             <View style={{ width: 22 }} />
           </View>
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
             <ScrollView contentContainerStyle={{ padding: spacing.lg }}>
-              {[
-                { k: 'name', l: 'الاسم *' },
-                { k: 'category', l: 'الفئة' },
-                { k: 'unit', l: 'الوحدة' },
-                { k: 'quantity', l: 'الكمية', num: true },
-                { k: 'min_quantity', l: 'الحد الأدنى', num: true },
-                { k: 'unit_price', l: 'سعر الوحدة', num: true },
-              ].map((f) => (
+              {[{ k: 'name', l: 'الاسم *' }, { k: 'category', l: 'الفئة' }, { k: 'unit', l: 'الوحدة' }, { k: 'quantity', l: 'الكمية', num: true }, { k: 'min_quantity', l: 'الحد الأدنى', num: true }, { k: 'unit_price', l: 'سعر الوحدة', num: true }].map((f) => (
                 <View key={f.k} style={{ marginBottom: spacing.md }}>
                   <Text style={styles.label}>{f.l}</Text>
-                  <TextInput
-                    testID={`inv-field-${f.k}`}
-                    value={form[f.k]} onChangeText={(v) => upd(f.k, v)}
-                    keyboardType={f.num ? 'numeric' : 'default'}
-                    style={styles.input}
-                  />
+                  <TextInput testID={`inv-field-${f.k}`} value={form[f.k]} onChangeText={(v) => upd(f.k, v)} keyboardType={f.num ? 'numeric' : 'default'} style={styles.input} />
                 </View>
               ))}
               {err ? <Text style={styles.err}>{err}</Text> : null}
@@ -135,6 +145,10 @@ const styles = StyleSheet.create({
   meta: { color: colors.muted, fontFamily: fontFamily.regular, fontSize: font.sm, textAlign: 'right', writingDirection: 'rtl' },
   lowChip: { backgroundColor: colors.warningBg, paddingHorizontal: spacing.sm, paddingVertical: 4, borderRadius: radius.pill },
   lowText: { color: colors.warning, fontFamily: fontFamily.bold, fontSize: 11 },
+  menuOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: 'flex-end' },
+  menuSheet: { backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: spacing.lg, gap: spacing.sm },
+  menuItem: { flexDirection: 'row-reverse', alignItems: 'center', gap: spacing.md, padding: spacing.md, borderRadius: radius.md, backgroundColor: colors.surfaceSecondary },
+  menuText: { fontSize: font.base, fontFamily: fontFamily.medium, color: colors.onSurface },
   modalOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: 'flex-end' },
   modalSheet: { backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '90%' },
   modalHeader: { flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center', padding: spacing.lg, borderBottomWidth: 1, borderBottomColor: colors.divider },

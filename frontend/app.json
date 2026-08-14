@@ -10,7 +10,11 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.emergent.smilecare.upetfa"
+      "bundleIdentifier": "com.emergent.smilecare.upetfa",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "لتحديد موقع عيادتك على الخريطة",
+        "NSPhotoLibraryUsageDescription": "لرفع الصور الشعاعية للمرضى"
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -18,7 +22,12 @@
         "backgroundColor": "#000000"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.emergent.smilecare.upetfa"
+      "package": "com.emergent.smilecare.upetfa",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "READ_MEDIA_IMAGES"
+      ]
     },
     "web": {
       "bundler": "metro",

@@ -28,8 +28,8 @@ function AuthGate() {
   useEffect(() => {
     if (loading) return;
     const inAuthGroup = segments[0] === '(auth)';
-    const inTabsGroup = segments[0] === '(tabs)';
-    if (!user && !inAuthGroup) {
+    const inPublicGroup = segments[0] === 'book';
+    if (!user && !inAuthGroup && !inPublicGroup) {
       router.replace('/(auth)/login');
     } else if (user && (inAuthGroup || segments.length === 0)) {
       router.replace('/(tabs)/dashboard');

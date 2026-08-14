@@ -34,6 +34,29 @@
 - ✅ Full RTL Arabic UI, Tajawal font
 - ✅ Backend 37/37 tests pass
 
+## Implemented — Iteration 2 (2026-08-14)
+- ✅ Invoice edit (PATCH) + delete with kebab menu (delete doctor-only)
+- ✅ Inventory edit + delete
+- ✅ Invoice PDF → uploaded to Object Storage → public download link → shared via WhatsApp (per invoice)
+- ✅ Public patient booking portal `/book/{tenant_id}` (no login): day + available-slot picker → creates pending appointment; double-book protection (409)
+- ✅ "Booking new" pending badge on appointments; doctor confirms
+- ✅ Unified single patient page (info + doctor_notes editable + dental chart + x-rays + invoices with PDF/WhatsApp)
+- ✅ New `doctor_notes` field on patient
+- ✅ Clinic location via GPS (expo-location) + interactive OpenStreetMap (Leaflet in WebView) + share booking link
+- ✅ Backend 52/52 tests pass, multi-tenant, doctor/assistant roles + assistant management
+- ✅ Role-based financial gating (toggle in settings) — verified 403/200
+- ✅ Patients CRUD + search, EHR fields
+- ✅ Interactive FDI dental chart (32 teeth, color-coded conditions, bottom sheet)
+- ✅ X-ray upload/gallery via Emergent Object Storage
+- ✅ PDF export (ختامي) via expo-print, WhatsApp share (deep-link)
+- ✅ Invoices (4 kinds) with WhatsApp sharing
+- ✅ Appointments with status chips
+- ✅ Inventory with low-stock warnings, Lab orders with status tracking
+- ✅ Dashboard: stats + financial summary + 6-month bar chart (SVG)
+- ✅ Settings: clinic info, map link, permission toggle
+- ✅ Full RTL Arabic UI, Tajawal font
+- ✅ Backend 37/37 tests pass
+
 ## Backlog (prioritized)
 - **P1**: AI assistant (medical consult + treatment plans) — deferred from MVP
 - **P1**: Automated appointment reminders (requires push notifications / native build)

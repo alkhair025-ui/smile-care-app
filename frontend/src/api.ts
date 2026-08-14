@@ -17,6 +17,7 @@ export type User = {
 };
 
 const BASE = (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/$/, '') + '/api';
+export const APP_BASE = (process.env.EXPO_PUBLIC_BACKEND_URL || '').replace(/\/$/, '');
 
 export async function getToken(): Promise<string | null> {
   return (await storage.secureGet<string>(TOKEN_KEY, '')) || null;
@@ -112,7 +113,24 @@ export const api = {
   listInvoices: (kind = '') => request<any[]>(`/invoices${kind ? `?kind=${kind}` : ''}`),
   createInvoice: (data: any) => request<any>('/invoices', { method: 'POST', body: data }),
   getInvoice: (id: string) => request<any>(`/invoices/${id}`),
+  updateInvoice: (id: string, data: any) => request<any>(`/invoices/${id}`, { method: 'PATCH', body: data }),
   deleteInvoice: (id: string) => request(`/invoices/${id}`, { method: 'DELETE' }),
+
+  uploadPdf: async (uri: string, name = 'invoice.pdf') => {
+    const form = new FormData();
+    if (Platform.OS === 'web') {
+      const blob = await (await fetch(uri)).blob();
+      form.append('file', blob, name);
+    } else {
+      form.append('file', { uri, name, type: 'application/pdf' } as any);
+    }
+    const res = await request<{ file_id: string; path: string }>('/uploads/pdf', { method: 'POST', body: form, isForm: true });
+    return { ...res, absolute_url: `${BASE.replace(/\/api$/, '')}${res.path}` };
+  },
+
+  publicClinic: (tenantId: string) => request<any>(`/public/clinic/${tenantId}`, { auth: false }),
+  publicSlots: (tenantId: string, date: string) => request<any>(`/public/clinic/${tenantId}/slots?date=${date}`, { auth: false }),
+  publicBook: (tenantId: string, data: any) => request<any>(`/public/clinic/${tenantId}/book`, { method: 'POST', body: data, auth: false }),
 
   listInventory: () => request<any[]>('/inventory'),
   createInventory: (data: any) => request<any>('/inventory', { method: 'POST', body: data }),

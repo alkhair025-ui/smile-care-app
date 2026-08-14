@@ -1,0 +1,38 @@
+{
+  "summary": "Iteration 2 full-stack testing for Eayadati (عيادتي). Backend: 15/15 new iteration-2 tests pass (invoice PATCH/DELETE with RBAC, public PDF upload+serve without auth, public clinic info/slots/book with 409 double-booking + patient-by-phone reuse, patient doctor_notes persistence) AND 37/37 iteration-1 regression tests still pass = 52/52 total. Frontend (mobile 390x844, Expo web, RTL Arabic): (1) Public booking portal /book/{tenant_id} loads WITHOUT auth, shows 14 day chips + 16 slots (09:00-16:30), submits an end-to-end booking successfully and shows the success screen; unknown tenant correctly renders 'العيادة غير موجودة'. (2) Unified patient page renders all 5 sections (المعلومات الشخصية, ملاحظات الطبيب editable, مخطط الأسنان FDI, الأشعة, الفواتير) with PDF and WhatsApp buttons on patient invoices. (3) Invoices tab has 4 cards with PDF + واتساب buttons on the 2 patient invoices (correctly hidden on salary/expense/purchase kinds) and a kebab menu (edit/delete visible for doctor). (4) Inventory list has kebab menus on each item for edit/delete. (5) Settings screen renders map + GPS button (use-gps-btn) + booking link (correct URL) + share and preview buttons (doctor only). RTL/Arabic layout is clean. Only pre-existing RN-Web console warnings (shadow*, pointerEvents) remain — non-blocking.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "StyleSheet shadow.card (src/theme)", "issue": "RN-Web deprecation: '\"shadow*\" style props are deprecated. Use \"boxShadow\"'. Applied via shadow.card used in book/settings/patient screens."},
+      {"component": "pointerEvents prop (various)", "issue": "RN-Web deprecation: 'props.pointerEvents is deprecated. Use style.pointerEvents'."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration2.py",
+    "/app/backend/tests/test_eayadati.py",
+    "/app/test_reports/pytest/pytest_iteration2.xml"
+  ],
+  "action_items": [
+    "(Optional/minor) Migrate `shadow*` style props to `boxShadow` in src/theme (shadow.card) to silence RN-Web deprecation warning across screens.",
+    "(Optional/minor) Move `pointerEvents` from JSX prop to `style.pointerEvents`.",
+    "(Nice-to-have) server.py is 918 lines — consider splitting into modules (auth, patients, invoices, storage, public, reports) for maintainability."
+  ],
+  "critical_code_review_comments": [
+    "server.py grew from 792 → 918 lines this iteration. Now clearly beyond the 700-line split threshold — plan a modular refactor.",
+    "public_book uses regex on the `date` field (`^{date}T{time}`) for double-booking detection which is correct given ISO string storage, but consider a compound index on (tenant_id, date, status) for scale.",
+    "public_book creates a patient with `notes='طلب حجز عبر الموقع'` but if patient exists by phone, does NOT update the record — acceptable for now; note that the incoming full_name is ignored on reuse (verified).",
+    "PDF upload endpoint POST /uploads/pdf is authed and returns a public URL served by GET /public/file/{id} without auth — correct security model; content is stored in Emergent Object Storage under `eayadati/public/{tenant}/{file_id}.pdf`.",
+    "Public endpoints (/public/clinic/*, /public/file/*) confirmed to work with NO Authorization header — verified via requests with empty headers.",
+    "Storage `_storage_key` module-level cache still has no lock (carry-over from iter 1). Low risk on single worker."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration2.py (new)"],
+  "success_rate": {"backend": "100% (52/52)", "frontend": "100%"},
+  "seed_data_creation": "Backend auto-seed intact. Tests create/cleanup TEST_* records inside fixtures. One test booking record `TEST_UI_E2E` remains in demo tenant from the UI E2E flow — safe to ignore or manually clean via delete_appointment.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend: https://smile-care-96.preview.emergentagent.com/api. Demo creds unchanged (doctor@demo.com/demo1234, assistant@demo.com/demo1234). Test suites: /app/backend/tests/test_eayadati.py (37 regression) and /app/backend/tests/test_iteration2.py (15 new). Public endpoints do NOT require Authorization. Demo tenant_id can be fetched via /api/auth/login. Frontend testIDs for new screens: booking portal (`day-YYYY-MM-DD`, `slot-HH:MM`, `book-name`, `book-phone`, `book-reason`, `book-submit`, `book-again`); patient page (`doctor-notes-input`); settings (`use-gps-btn`, `booking-link`, `share-booking-btn`, `open-booking-btn`, `open-map-btn`). WhatsApp buttons on frontend just open wa.me deep link — cannot e2e verify the WhatsApp app but the button press triggers PDF generate+upload flow and does not crash.",
+  "rca_of_issue": "No blocking issues found in iteration 2."
+}

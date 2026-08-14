@@ -96,6 +96,7 @@ class PatientIn(BaseModel):
     allergies: str = ""
     medications: str = ""
     notes: str = ""
+    doctor_notes: str = ""
 
 class PatientOut(PatientIn):
     id: str
@@ -657,10 +658,135 @@ async def get_invoice(iid: str, user: dict = Depends(get_current_user)):
         raise HTTPException(404)
     return _clean(inv)
 
+@api_router.patch("/invoices/{iid}")
+async def update_invoice(iid: str, data: InvoiceIn, user: dict = Depends(get_current_user)):
+    if not await can_view_financials(user):
+        raise HTTPException(403, "لا تملك صلاحية تعديل الفواتير")
+    if data.total == 0 and data.items:
+        data.total = sum(i.quantity * i.unit_price for i in data.items)
+    await db.invoices.update_one({"id": iid, "tenant_id": user["tenant_id"]}, {"$set": data.dict()})
+    inv = await db.invoices.find_one({"id": iid, "tenant_id": user["tenant_id"]})
+    if not inv:
+        raise HTTPException(404)
+    return _clean(inv)
+
 @api_router.delete("/invoices/{iid}")
 async def delete_invoice(iid: str, doctor: dict = Depends(require_role("doctor"))):
     await db.invoices.delete_one({"id": iid, "tenant_id": doctor["tenant_id"]})
     return {"ok": True}
+
+# ------------------------ Public PDF hosting ------------------------
+
+@api_router.post("/uploads/pdf")
+async def upload_pdf(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    """Doctor uploads a generated invoice PDF; returns a PUBLIC download link."""
+    contents = await file.read()
+    file_id = str(uuid.uuid4())
+    obj_path = f"{APP_NAME}/public/{user['tenant_id']}/{file_id}.pdf"
+    try:
+        await run_in_threadpool(_put_object, obj_path, contents, "application/pdf")
+    except Exception as e:
+        raise HTTPException(500, f"فشل رفع الملف: {e}")
+    await db.public_files.insert_one({
+        "id": file_id, "tenant_id": user["tenant_id"], "storage_path": obj_path,
+        "content_type": "application/pdf", "filename": file.filename or "invoice.pdf",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    base = (os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
+    public_url = f"{base}/api/public/file/{file_id}" if base else f"/api/public/file/{file_id}"
+    return {"file_id": file_id, "public_url": public_url, "path": f"/api/public/file/{file_id}"}
+
+@api_router.get("/public/file/{file_id}")
+async def get_public_file(file_id: str):
+    doc = await db.public_files.find_one({"id": file_id})
+    if not doc:
+        raise HTTPException(404, "الملف غير موجود")
+    try:
+        content, ct = await run_in_threadpool(_get_object, doc["storage_path"])
+    except Exception as e:
+        raise HTTPException(500, f"فشل جلب الملف: {e}")
+    return Response(content=content, media_type=ct,
+                    headers={"Content-Disposition": f'inline; filename="{doc.get("filename", "invoice.pdf")}"'})
+
+# ------------------------ Public booking portal ------------------------
+
+WORK_START_HOUR = 9
+WORK_END_HOUR = 17
+SLOT_MINUTES = 30
+
+@api_router.get("/public/clinic/{tenant_id}")
+async def public_clinic(tenant_id: str):
+    t = await db.tenants.find_one({"tenant_id": tenant_id})
+    if not t:
+        raise HTTPException(404, "العيادة غير موجودة")
+    return {
+        "tenant_id": tenant_id,
+        "clinic_name": t.get("clinic_name", "العيادة"),
+        "clinic_address": t.get("clinic_address", ""),
+        "clinic_phone": t.get("clinic_phone", ""),
+        "clinic_location": t.get("clinic_location"),
+    }
+
+@api_router.get("/public/clinic/{tenant_id}/slots")
+async def public_slots(tenant_id: str, date: str):
+    """date = YYYY-MM-DD. Returns available HH:MM slots (09:00-17:00, 30-min) minus booked."""
+    t = await db.tenants.find_one({"tenant_id": tenant_id})
+    if not t:
+        raise HTTPException(404, "العيادة غير موجودة")
+    booked = await db.appointments.find({
+        "tenant_id": tenant_id,
+        "date": {"$gte": f"{date}T00:00", "$lte": f"{date}T23:59"},
+        "status": {"$ne": "cancelled"},
+    }).to_list(200)
+    taken = {a["date"][11:16] for a in booked}
+    slots = []
+    for h in range(WORK_START_HOUR, WORK_END_HOUR):
+        for m in (0, SLOT_MINUTES):
+            hhmm = f"{h:02d}:{m:02d}"
+            slots.append({"time": hhmm, "available": hhmm not in taken})
+    return {"date": date, "slots": slots}
+
+class PublicBookingIn(BaseModel):
+    full_name: str
+    phone: str
+    date: str      # YYYY-MM-DD
+    time: str      # HH:MM
+    reason: str = ""
+
+@api_router.post("/public/clinic/{tenant_id}/book")
+async def public_book(tenant_id: str, data: PublicBookingIn):
+    t = await db.tenants.find_one({"tenant_id": tenant_id})
+    if not t:
+        raise HTTPException(404, "العيادة غير موجودة")
+    iso = f"{data.date}T{data.time}:00"
+    # prevent double booking
+    clash = await db.appointments.find_one({
+        "tenant_id": tenant_id, "date": {"$regex": f"^{data.date}T{data.time}"},
+        "status": {"$ne": "cancelled"},
+    })
+    if clash:
+        raise HTTPException(409, "هذا الموعد محجوز، اختر وقتاً آخر")
+    # find or create patient by phone
+    patient = None
+    if data.phone:
+        patient = await db.patients.find_one({"tenant_id": tenant_id, "phone": data.phone})
+    if not patient:
+        pid = str(uuid.uuid4())
+        patient = {
+            "id": pid, "tenant_id": tenant_id, "full_name": data.full_name, "phone": data.phone,
+            "email": "", "date_of_birth": "", "gender": "", "address": "",
+            "medical_history": "", "allergies": "", "medications": "", "notes": "طلب حجز عبر الموقع",
+            "doctor_notes": "", "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.patients.insert_one(patient.copy())
+    appt = {
+        "id": str(uuid.uuid4()), "tenant_id": tenant_id,
+        "patient_id": patient["id"], "patient_name": data.full_name,
+        "date": iso, "duration_minutes": SLOT_MINUTES, "reason": data.reason or "حجز عبر الموقع",
+        "status": "pending", "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.appointments.insert_one(appt.copy())
+    return {"ok": True, "message": "تم استلام طلب الحجز بنجاح"}
 
 # ------------------------ Inventory ------------------------
 

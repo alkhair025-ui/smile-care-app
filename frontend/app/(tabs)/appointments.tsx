@@ -65,6 +65,12 @@ export default function Appointments() {
                   <View style={{ flex: 1 }}>
                     <Text style={styles.name}>{a.patient_name}</Text>
                     <Text style={styles.meta}>{a.reason || 'موعد'}</Text>
+                    {a.status === 'pending' && (
+                      <View style={styles.pendingBadge}>
+                        <Feather name="clock" size={11} color={colors.warning} />
+                        <Text style={styles.pendingText}>حجز جديد بانتظار التأكيد</Text>
+                      </View>
+                    )}
                   </View>
                   <View style={styles.statusChips}>
                     <Chip label="مؤكد" active={a.status === 'confirmed'} onPress={() => setStatus(a, 'confirmed')} color={colors.success} tid={`appt-confirm-${a.id}`} />
@@ -179,6 +185,8 @@ const styles = StyleSheet.create({
   name: { fontSize: font.base, fontFamily: fontFamily.bold, color: colors.onSurface, textAlign: 'right', writingDirection: 'rtl' },
   meta: { color: colors.muted, fontFamily: fontFamily.regular, fontSize: font.sm, textAlign: 'right', writingDirection: 'rtl' },
   statusChips: { flexDirection: 'row-reverse', gap: 4 },
+  pendingBadge: { flexDirection: 'row-reverse', alignItems: 'center', gap: 4, alignSelf: 'flex-end', marginTop: 4, backgroundColor: colors.warningBg, paddingHorizontal: spacing.sm, paddingVertical: 2, borderRadius: radius.pill },
+  pendingText: { color: colors.warning, fontSize: 10, fontFamily: fontFamily.medium },
   chip: { paddingHorizontal: spacing.sm, paddingVertical: 4, borderRadius: radius.pill, borderWidth: 1 },
   modalOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: 'flex-end' },
   modalSheet: { backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '90%' },
