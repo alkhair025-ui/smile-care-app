@@ -1,0 +1,791 @@
+"""
+Eayadati (عيادتي) - Dental Clinic Management Backend
+Multi-tenant SaaS: doctors register as tenant owners and manage assistants.
+"""
+import os
+import uuid
+import logging
+from pathlib import Path
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional, Literal, Annotated
+
+import jwt
+import bcrypt
+import requests
+from bson import ObjectId
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request, status, UploadFile, File
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import Response
+from fastapi.security import OAuth2PasswordBearer
+from dotenv import load_dotenv
+from starlette.middleware.cors import CORSMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel, EmailStr, Field
+
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / '.env')
+
+MONGO_URL = os.environ['MONGO_URL']
+DB_NAME = os.environ['DB_NAME']
+JWT_SECRET = os.environ.get('JWT_SECRET', 'eayadati-dev-secret-change-in-prod-64chars-XXXXXXXXXXXXXXXXXXXXXXX')
+JWT_ALGORITHM = 'HS256'
+ACCESS_TOKEN_HOURS = 24 * 7  # 7 days
+
+# Object Storage
+STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https://integrations.emergentagent.com"
+STORAGE_URL = STORAGE_BASE.rstrip("/") + "/objstore/api/v1/storage"
+EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
+APP_NAME = "eayadati"
+_storage_key: Optional[str] = None
+
+client = AsyncIOMotorClient(MONGO_URL)
+db = client[DB_NAME]
+
+app = FastAPI(title="Eayadati API")
+api_router = APIRouter(prefix="/api")
+oauth2 = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
+
+Role = Literal["doctor", "assistant"]
+
+# ------------------------ Models ------------------------
+
+class RegisterIn(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=6, max_length=72)
+    full_name: str
+    clinic_name: str
+
+class LoginIn(BaseModel):
+    email: EmailStr
+    password: str
+
+class AssistantIn(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=6, max_length=72)
+    full_name: str
+
+class UserOut(BaseModel):
+    id: str
+    email: EmailStr
+    full_name: str
+    tenant_id: str
+    role: Role
+    clinic_name: Optional[str] = None
+    show_financials_to_assistants: bool = False
+
+class TokenOut(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserOut
+
+class SettingsUpdate(BaseModel):
+    show_financials_to_assistants: Optional[bool] = None
+    clinic_name: Optional[str] = None
+    clinic_address: Optional[str] = None
+    clinic_phone: Optional[str] = None
+    clinic_location: Optional[dict] = None  # {lat, lng}
+
+class PatientIn(BaseModel):
+    full_name: str
+    phone: str = ""
+    email: str = ""
+    date_of_birth: str = ""  # ISO
+    gender: str = ""
+    address: str = ""
+    medical_history: str = ""
+    allergies: str = ""
+    medications: str = ""
+    notes: str = ""
+
+class PatientOut(PatientIn):
+    id: str
+    tenant_id: str
+    created_at: str
+
+class ToothStateIn(BaseModel):
+    tooth: int  # FDI number 11-48
+    condition: str  # healthy/caries/filling/crown/extracted/missing/rct/implant
+    note: str = ""
+
+class AppointmentIn(BaseModel):
+    patient_id: str
+    patient_name: str = ""
+    date: str  # ISO datetime
+    duration_minutes: int = 30
+    reason: str = ""
+    status: str = "scheduled"  # scheduled/confirmed/completed/cancelled/no_show
+
+class InvoiceItem(BaseModel):
+    description: str
+    quantity: float = 1
+    unit_price: float = 0
+
+class InvoiceIn(BaseModel):
+    kind: str  # patient/purchase/expense/salary
+    patient_id: str = ""
+    party_name: str = ""  # patient/supplier/employee name
+    items: List[InvoiceItem] = []
+    total: float = 0
+    paid: float = 0
+    date: str = ""  # ISO
+    note: str = ""
+
+class InventoryItemIn(BaseModel):
+    name: str
+    unit: str = "قطعة"
+    quantity: float = 0
+    min_quantity: float = 5
+    unit_price: float = 0
+    category: str = "عام"
+
+class LabOrderIn(BaseModel):
+    patient_id: str = ""
+    patient_name: str = ""
+    lab_name: str = ""
+    description: str = ""
+    sent_at: str = ""
+    expected_at: str = ""
+    status: str = "sent"  # sent/received/delivered
+    cost: float = 0
+    paid: float = 0
+
+# ------------------------ Auth helpers ------------------------
+
+def hash_password(password: str) -> str:
+    raw = password.encode("utf-8")
+    if len(raw) > 72:
+        raise HTTPException(400, "كلمة المرور طويلة جداً")
+    return bcrypt.hashpw(raw, bcrypt.gensalt(rounds=12)).decode("utf-8")
+
+def verify_password(password: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
+    except Exception:
+        return False
+
+def make_token(user: dict) -> str:
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": str(user["_id"]),
+        "tenant_id": user["tenant_id"],
+        "role": user["role"],
+        "iat": now,
+        "exp": now + timedelta(hours=ACCESS_TOKEN_HOURS),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def public_user(user: dict, tenant: Optional[dict] = None) -> UserOut:
+    return UserOut(
+        id=str(user["_id"]),
+        email=user["email"],
+        full_name=user.get("full_name", ""),
+        tenant_id=user["tenant_id"],
+        role=user["role"],
+        clinic_name=(tenant or {}).get("clinic_name"),
+        show_financials_to_assistants=(tenant or {}).get("show_financials_to_assistants", False),
+    )
+
+async def get_current_user(token: Optional[str] = Depends(oauth2)) -> dict:
+    unauthorized = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="غير مصرح",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    if not token:
+        raise unauthorized
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user_id = ObjectId(payload["sub"])
+    except Exception:
+        raise unauthorized
+    user = await db.users.find_one({"_id": user_id})
+    if not user or user.get("disabled", False):
+        raise unauthorized
+    return user
+
+async def get_tenant(tenant_id: str) -> dict:
+    t = await db.tenants.find_one({"tenant_id": tenant_id})
+    return t or {}
+
+def require_role(*roles: Role):
+    async def dep(user: dict = Depends(get_current_user)):
+        if user["role"] not in roles:
+            raise HTTPException(403, "صلاحيات غير كافية")
+        return user
+    return dep
+
+async def can_view_financials(user: dict) -> bool:
+    if user["role"] == "doctor":
+        return True
+    tenant = await get_tenant(user["tenant_id"])
+    return bool(tenant.get("show_financials_to_assistants", False))
+
+# ------------------------ Object Storage ------------------------
+
+def _init_storage():
+    global _storage_key
+    if _storage_key:
+        return _storage_key
+    if not EMERGENT_KEY:
+        raise HTTPException(500, "Storage غير مهيأ")
+    resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_KEY}, timeout=30)
+    resp.raise_for_status()
+    _storage_key = resp.json()["storage_key"]
+    return _storage_key
+
+def _put_object(path: str, data: bytes, content_type: str) -> dict:
+    key = _init_storage()
+    resp = requests.put(
+        f"{STORAGE_URL}/objects/{path}",
+        headers={"X-Storage-Key": key, "Content-Type": content_type},
+        data=data, timeout=120,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+def _get_object(path: str):
+    global _storage_key
+    key = _init_storage()
+    resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
+    if resp.status_code == 503:
+        _storage_key = None
+        key = _init_storage()
+        resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
+    resp.raise_for_status()
+    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
+
+# ------------------------ Startup ------------------------
+
+@app.on_event("startup")
+async def startup():
+    await db.users.create_index("email", unique=True)
+    await db.users.create_index([("tenant_id", 1), ("role", 1)])
+    await db.tenants.create_index("tenant_id", unique=True)
+    await db.patients.create_index([("tenant_id", 1), ("full_name", 1)])
+    await db.appointments.create_index([("tenant_id", 1), ("date", 1)])
+    await db.invoices.create_index([("tenant_id", 1), ("date", -1)])
+    await db.inventory.create_index([("tenant_id", 1), ("name", 1)])
+    await db.lab_orders.create_index([("tenant_id", 1)])
+    # Seed demo account
+    if not await db.users.find_one({"email": "doctor@demo.com"}):
+        await _seed_demo()
+
+async def _seed_demo():
+    tenant_id = str(uuid.uuid4())
+    doctor_pw = hash_password("demo1234")
+    doc = {
+        "email": "doctor@demo.com",
+        "password_hash": doctor_pw,
+        "full_name": "د. أحمد الطبيب",
+        "tenant_id": tenant_id,
+        "role": "doctor",
+        "disabled": False,
+        "created_at": datetime.now(timezone.utc),
+    }
+    r = await db.users.insert_one(doc)
+    await db.users.insert_one({
+        "email": "assistant@demo.com",
+        "password_hash": hash_password("demo1234"),
+        "full_name": "سارة المساعدة",
+        "tenant_id": tenant_id,
+        "role": "assistant",
+        "disabled": False,
+        "created_at": datetime.now(timezone.utc),
+    })
+    await db.tenants.insert_one({
+        "tenant_id": tenant_id,
+        "owner_user_id": r.inserted_id,
+        "clinic_name": "عيادة الابتسامة",
+        "clinic_address": "شارع الاستقلال - عمّان",
+        "clinic_phone": "+962790000000",
+        "clinic_location": {"lat": 31.9539, "lng": 35.9106},
+        "show_financials_to_assistants": False,
+        "created_at": datetime.now(timezone.utc),
+    })
+    # Seed patients
+    patients = [
+        {"full_name": "محمد علي", "phone": "+962791111111", "date_of_birth": "1985-03-12", "gender": "ذكر", "medical_history": "لا يوجد", "allergies": "بنسلين", "medications": ""},
+        {"full_name": "فاطمة الزهراء", "phone": "+962792222222", "date_of_birth": "1992-07-24", "gender": "أنثى", "medical_history": "سكري", "allergies": "", "medications": "ميتفورمين"},
+        {"full_name": "خالد الحسن", "phone": "+962793333333", "date_of_birth": "1978-11-05", "gender": "ذكر", "medical_history": "ضغط دم", "allergies": "", "medications": ""},
+    ]
+    p_ids = []
+    for p in patients:
+        pid = str(uuid.uuid4())
+        p_ids.append(pid)
+        await db.patients.insert_one({
+            "id": pid, "tenant_id": tenant_id, "created_at": datetime.now(timezone.utc).isoformat(),
+            "email": "", "address": "", "notes": "",
+            **p,
+        })
+    # Appointments
+    today = datetime.now()
+    for i, pid in enumerate(p_ids):
+        await db.appointments.insert_one({
+            "id": str(uuid.uuid4()),
+            "tenant_id": tenant_id,
+            "patient_id": pid,
+            "patient_name": patients[i]["full_name"],
+            "date": (today + timedelta(days=i, hours=9+i)).isoformat(),
+            "duration_minutes": 30,
+            "reason": ["فحص دوري", "تنظيف جير", "حشوة"][i],
+            "status": "scheduled",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+    # Invoices
+    invoice_seeds = [
+        {"kind": "patient", "party_name": "محمد علي", "patient_id": p_ids[0], "items": [{"description": "فحص + أشعة", "quantity": 1, "unit_price": 50}], "total": 50, "paid": 50},
+        {"kind": "patient", "party_name": "فاطمة الزهراء", "patient_id": p_ids[1], "items": [{"description": "حشوة ضوئية", "quantity": 2, "unit_price": 40}], "total": 80, "paid": 80},
+        {"kind": "purchase", "party_name": "شركة الأدوات الطبية", "items": [{"description": "مواد حشو", "quantity": 10, "unit_price": 15}], "total": 150, "paid": 150},
+        {"kind": "salary", "party_name": "سارة المساعدة", "items": [{"description": "راتب شهري", "quantity": 1, "unit_price": 500}], "total": 500, "paid": 500},
+        {"kind": "expense", "party_name": "كهرباء", "items": [{"description": "فاتورة كهرباء", "quantity": 1, "unit_price": 80}], "total": 80, "paid": 80},
+    ]
+    for inv in invoice_seeds:
+        await db.invoices.insert_one({
+            "id": str(uuid.uuid4()),
+            "tenant_id": tenant_id,
+            "date": datetime.now(timezone.utc).isoformat(),
+            "note": "",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            **inv,
+        })
+    # Inventory
+    inv_seeds = [
+        {"name": "قفازات طبية", "unit": "علبة", "quantity": 20, "min_quantity": 5, "unit_price": 5, "category": "مستلزمات"},
+        {"name": "مادة حشو ضوئي", "unit": "أنبوب", "quantity": 3, "min_quantity": 5, "unit_price": 25, "category": "مواد"},
+        {"name": "إبر تخدير", "unit": "علبة", "quantity": 8, "min_quantity": 3, "unit_price": 12, "category": "مستلزمات"},
+    ]
+    for it in inv_seeds:
+        await db.inventory.insert_one({
+            "id": str(uuid.uuid4()),
+            "tenant_id": tenant_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            **it,
+        })
+    # Lab
+    await db.lab_orders.insert_one({
+        "id": str(uuid.uuid4()),
+        "tenant_id": tenant_id,
+        "patient_id": p_ids[2],
+        "patient_name": "خالد الحسن",
+        "lab_name": "مخبر الابتسامة",
+        "description": "تاج زركون للسن 26",
+        "sent_at": today.isoformat(),
+        "expected_at": (today + timedelta(days=5)).isoformat(),
+        "status": "sent",
+        "cost": 80,
+        "paid": 0,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    print(f"[SEED] Demo tenant seeded: {tenant_id}")
+
+# ------------------------ Auth endpoints ------------------------
+
+@api_router.post("/auth/register", response_model=TokenOut)
+async def register(data: RegisterIn):
+    email = data.email.lower()
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(409, "البريد الإلكتروني مسجل مسبقاً")
+    tenant_id = str(uuid.uuid4())
+    user_doc = {
+        "email": email,
+        "password_hash": hash_password(data.password),
+        "full_name": data.full_name,
+        "tenant_id": tenant_id,
+        "role": "doctor",
+        "disabled": False,
+        "created_at": datetime.now(timezone.utc),
+    }
+    r = await db.users.insert_one(user_doc)
+    user_doc["_id"] = r.inserted_id
+    tenant_doc = {
+        "tenant_id": tenant_id,
+        "owner_user_id": r.inserted_id,
+        "clinic_name": data.clinic_name,
+        "show_financials_to_assistants": False,
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.tenants.insert_one(tenant_doc)
+    return {"access_token": make_token(user_doc), "token_type": "bearer", "user": public_user(user_doc, tenant_doc)}
+
+@api_router.post("/auth/login", response_model=TokenOut)
+async def login(data: LoginIn):
+    user = await db.users.find_one({"email": data.email.lower()})
+    if not user or not verify_password(data.password, user["password_hash"]):
+        raise HTTPException(401, "بريد أو كلمة مرور غير صحيحة")
+    tenant = await get_tenant(user["tenant_id"])
+    return {"access_token": make_token(user), "token_type": "bearer", "user": public_user(user, tenant)}
+
+@api_router.get("/auth/me", response_model=UserOut)
+async def me(user: dict = Depends(get_current_user)):
+    tenant = await get_tenant(user["tenant_id"])
+    return public_user(user, tenant)
+
+@api_router.post("/auth/assistants", response_model=UserOut)
+async def create_assistant(data: AssistantIn, doctor: dict = Depends(require_role("doctor"))):
+    email = data.email.lower()
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(409, "البريد الإلكتروني مسجل مسبقاً")
+    new_user = {
+        "email": email, "password_hash": hash_password(data.password),
+        "full_name": data.full_name, "tenant_id": doctor["tenant_id"], "role": "assistant",
+        "disabled": False, "created_at": datetime.now(timezone.utc),
+    }
+    r = await db.users.insert_one(new_user)
+    new_user["_id"] = r.inserted_id
+    tenant = await get_tenant(doctor["tenant_id"])
+    return public_user(new_user, tenant)
+
+@api_router.get("/auth/assistants", response_model=List[UserOut])
+async def list_assistants(doctor: dict = Depends(require_role("doctor"))):
+    tenant = await get_tenant(doctor["tenant_id"])
+    users = await db.users.find({"tenant_id": doctor["tenant_id"], "role": "assistant"}).to_list(200)
+    return [public_user(u, tenant) for u in users]
+
+@api_router.delete("/auth/assistants/{user_id}")
+async def delete_assistant(user_id: str, doctor: dict = Depends(require_role("doctor"))):
+    await db.users.delete_one({"_id": ObjectId(user_id), "tenant_id": doctor["tenant_id"], "role": "assistant"})
+    return {"ok": True}
+
+@api_router.patch("/settings")
+async def update_settings(data: SettingsUpdate, doctor: dict = Depends(require_role("doctor"))):
+    update = {k: v for k, v in data.dict().items() if v is not None}
+    if update:
+        await db.tenants.update_one({"tenant_id": doctor["tenant_id"]}, {"$set": update})
+    tenant = await get_tenant(doctor["tenant_id"])
+    tenant.pop("_id", None)
+    tenant.pop("owner_user_id", None)
+    return tenant
+
+@api_router.get("/settings")
+async def get_settings(user: dict = Depends(get_current_user)):
+    tenant = await get_tenant(user["tenant_id"])
+    tenant.pop("_id", None)
+    tenant.pop("owner_user_id", None)
+    return tenant
+
+# ------------------------ Patients ------------------------
+
+def _clean(doc: dict) -> dict:
+    doc.pop("_id", None)
+    if isinstance(doc.get("created_at"), datetime):
+        doc["created_at"] = doc["created_at"].isoformat()
+    return doc
+
+@api_router.get("/patients")
+async def list_patients(user: dict = Depends(get_current_user), q: str = ""):
+    filt = {"tenant_id": user["tenant_id"]}
+    if q:
+        filt["full_name"] = {"$regex": q, "$options": "i"}
+    items = await db.patients.find(filt).sort("created_at", -1).to_list(500)
+    return [_clean(i) for i in items]
+
+@api_router.post("/patients")
+async def create_patient(data: PatientIn, user: dict = Depends(get_current_user)):
+    doc = {"id": str(uuid.uuid4()), "tenant_id": user["tenant_id"],
+           "created_at": datetime.now(timezone.utc).isoformat(), **data.dict()}
+    await db.patients.insert_one(doc.copy())
+    return _clean(doc)
+
+@api_router.get("/patients/{pid}")
+async def get_patient(pid: str, user: dict = Depends(get_current_user)):
+    p = await db.patients.find_one({"id": pid, "tenant_id": user["tenant_id"]})
+    if not p:
+        raise HTTPException(404, "المريض غير موجود")
+    return _clean(p)
+
+@api_router.patch("/patients/{pid}")
+async def update_patient(pid: str, data: PatientIn, user: dict = Depends(get_current_user)):
+    await db.patients.update_one({"id": pid, "tenant_id": user["tenant_id"]}, {"$set": data.dict()})
+    p = await db.patients.find_one({"id": pid, "tenant_id": user["tenant_id"]})
+    if not p:
+        raise HTTPException(404)
+    return _clean(p)
+
+@api_router.delete("/patients/{pid}")
+async def delete_patient(pid: str, user: dict = Depends(get_current_user)):
+    await db.patients.delete_one({"id": pid, "tenant_id": user["tenant_id"]})
+    await db.tooth_charts.delete_many({"patient_id": pid, "tenant_id": user["tenant_id"]})
+    return {"ok": True}
+
+# ------------------------ Dental Chart ------------------------
+
+@api_router.get("/patients/{pid}/chart")
+async def get_chart(pid: str, user: dict = Depends(get_current_user)):
+    docs = await db.tooth_charts.find({"patient_id": pid, "tenant_id": user["tenant_id"]}).to_list(200)
+    return [_clean(d) for d in docs]
+
+@api_router.post("/patients/{pid}/chart")
+async def set_tooth(pid: str, data: ToothStateIn, user: dict = Depends(get_current_user)):
+    await db.tooth_charts.update_one(
+        {"patient_id": pid, "tenant_id": user["tenant_id"], "tooth": data.tooth},
+        {"$set": {"condition": data.condition, "note": data.note,
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    doc = await db.tooth_charts.find_one({"patient_id": pid, "tenant_id": user["tenant_id"], "tooth": data.tooth})
+    return _clean(doc)
+
+# ------------------------ X-Rays ------------------------
+
+@api_router.post("/patients/{pid}/xrays")
+async def upload_xray(pid: str, file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    p = await db.patients.find_one({"id": pid, "tenant_id": user["tenant_id"]})
+    if not p:
+        raise HTTPException(404, "المريض غير موجود")
+    contents = await file.read()
+    ext = (file.filename or "img.jpg").rsplit(".", 1)[-1].lower() or "jpg"
+    obj_path = f"{APP_NAME}/uploads/{user['tenant_id']}/{uuid.uuid4()}.{ext}"
+    ct = file.content_type or "image/jpeg"
+    try:
+        await run_in_threadpool(_put_object, obj_path, contents, ct)
+    except Exception as e:
+        raise HTTPException(500, f"فشل رفع الملف: {e}")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "tenant_id": user["tenant_id"],
+        "patient_id": pid,
+        "storage_path": obj_path,
+        "filename": file.filename or "xray.jpg",
+        "content_type": ct,
+        "size": len(contents),
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.xrays.insert_one(doc.copy())
+    return _clean(doc)
+
+@api_router.get("/patients/{pid}/xrays")
+async def list_xrays(pid: str, user: dict = Depends(get_current_user)):
+    docs = await db.xrays.find({"patient_id": pid, "tenant_id": user["tenant_id"]}).sort("uploaded_at", -1).to_list(200)
+    return [_clean(d) for d in docs]
+
+@api_router.get("/xrays/{xray_id}/file")
+async def get_xray(xray_id: str, token: Optional[str] = None):
+    # Allow token via query for web <img> tags
+    user = None
+    if token:
+        try:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            user = await db.users.find_one({"_id": ObjectId(payload["sub"])})
+        except Exception:
+            pass
+    if not user:
+        raise HTTPException(401, "غير مصرح")
+    doc = await db.xrays.find_one({"id": xray_id, "tenant_id": user["tenant_id"]})
+    if not doc:
+        raise HTTPException(404, "الملف غير موجود")
+    try:
+        content, ct = await run_in_threadpool(_get_object, doc["storage_path"])
+    except Exception as e:
+        raise HTTPException(500, f"فشل جلب الملف: {e}")
+    return Response(content=content, media_type=ct)
+
+@api_router.delete("/xrays/{xray_id}")
+async def delete_xray(xray_id: str, user: dict = Depends(get_current_user)):
+    await db.xrays.delete_one({"id": xray_id, "tenant_id": user["tenant_id"]})
+    return {"ok": True}
+
+# ------------------------ Appointments ------------------------
+
+@api_router.get("/appointments")
+async def list_appointments(user: dict = Depends(get_current_user), date_from: str = "", date_to: str = ""):
+    filt = {"tenant_id": user["tenant_id"]}
+    if date_from or date_to:
+        filt["date"] = {}
+        if date_from:
+            filt["date"]["$gte"] = date_from
+        if date_to:
+            filt["date"]["$lte"] = date_to
+    items = await db.appointments.find(filt).sort("date", 1).to_list(500)
+    return [_clean(i) for i in items]
+
+@api_router.post("/appointments")
+async def create_appointment(data: AppointmentIn, user: dict = Depends(get_current_user)):
+    if not data.patient_name and data.patient_id:
+        p = await db.patients.find_one({"id": data.patient_id, "tenant_id": user["tenant_id"]})
+        if p:
+            data.patient_name = p["full_name"]
+    doc = {"id": str(uuid.uuid4()), "tenant_id": user["tenant_id"],
+           "created_at": datetime.now(timezone.utc).isoformat(), **data.dict()}
+    await db.appointments.insert_one(doc.copy())
+    return _clean(doc)
+
+@api_router.patch("/appointments/{aid}")
+async def update_appointment(aid: str, data: AppointmentIn, user: dict = Depends(get_current_user)):
+    await db.appointments.update_one({"id": aid, "tenant_id": user["tenant_id"]}, {"$set": data.dict()})
+    a = await db.appointments.find_one({"id": aid, "tenant_id": user["tenant_id"]})
+    if not a:
+        raise HTTPException(404)
+    return _clean(a)
+
+@api_router.delete("/appointments/{aid}")
+async def delete_appointment(aid: str, user: dict = Depends(get_current_user)):
+    await db.appointments.delete_one({"id": aid, "tenant_id": user["tenant_id"]})
+    return {"ok": True}
+
+# ------------------------ Invoices ------------------------
+
+@api_router.get("/invoices")
+async def list_invoices(user: dict = Depends(get_current_user), kind: str = ""):
+    if not await can_view_financials(user):
+        raise HTTPException(403, "لا تملك صلاحية عرض الفواتير المالية")
+    filt = {"tenant_id": user["tenant_id"]}
+    if kind:
+        filt["kind"] = kind
+    items = await db.invoices.find(filt).sort("date", -1).to_list(500)
+    return [_clean(i) for i in items]
+
+@api_router.post("/invoices")
+async def create_invoice(data: InvoiceIn, user: dict = Depends(get_current_user)):
+    if not await can_view_financials(user):
+        raise HTTPException(403, "لا تملك صلاحية إنشاء فواتير")
+    if data.total == 0 and data.items:
+        data.total = sum(i.quantity * i.unit_price for i in data.items)
+    doc = {"id": str(uuid.uuid4()), "tenant_id": user["tenant_id"],
+           "created_at": datetime.now(timezone.utc).isoformat(),
+           "date": data.date or datetime.now(timezone.utc).isoformat(),
+           **data.dict()}
+    doc["date"] = data.date or datetime.now(timezone.utc).isoformat()
+    await db.invoices.insert_one(doc.copy())
+    return _clean(doc)
+
+@api_router.get("/invoices/{iid}")
+async def get_invoice(iid: str, user: dict = Depends(get_current_user)):
+    if not await can_view_financials(user):
+        raise HTTPException(403)
+    inv = await db.invoices.find_one({"id": iid, "tenant_id": user["tenant_id"]})
+    if not inv:
+        raise HTTPException(404)
+    return _clean(inv)
+
+@api_router.delete("/invoices/{iid}")
+async def delete_invoice(iid: str, doctor: dict = Depends(require_role("doctor"))):
+    await db.invoices.delete_one({"id": iid, "tenant_id": doctor["tenant_id"]})
+    return {"ok": True}
+
+# ------------------------ Inventory ------------------------
+
+@api_router.get("/inventory")
+async def list_inventory(user: dict = Depends(get_current_user)):
+    items = await db.inventory.find({"tenant_id": user["tenant_id"]}).sort("name", 1).to_list(500)
+    return [_clean(i) for i in items]
+
+@api_router.post("/inventory")
+async def create_inventory(data: InventoryItemIn, user: dict = Depends(get_current_user)):
+    doc = {"id": str(uuid.uuid4()), "tenant_id": user["tenant_id"],
+           "created_at": datetime.now(timezone.utc).isoformat(), **data.dict()}
+    await db.inventory.insert_one(doc.copy())
+    return _clean(doc)
+
+@api_router.patch("/inventory/{iid}")
+async def update_inventory(iid: str, data: InventoryItemIn, user: dict = Depends(get_current_user)):
+    await db.inventory.update_one({"id": iid, "tenant_id": user["tenant_id"]}, {"$set": data.dict()})
+    i = await db.inventory.find_one({"id": iid, "tenant_id": user["tenant_id"]})
+    return _clean(i) if i else {}
+
+@api_router.delete("/inventory/{iid}")
+async def delete_inventory(iid: str, user: dict = Depends(get_current_user)):
+    await db.inventory.delete_one({"id": iid, "tenant_id": user["tenant_id"]})
+    return {"ok": True}
+
+# ------------------------ Lab Orders ------------------------
+
+@api_router.get("/lab-orders")
+async def list_lab(user: dict = Depends(get_current_user)):
+    items = await db.lab_orders.find({"tenant_id": user["tenant_id"]}).sort("sent_at", -1).to_list(500)
+    return [_clean(i) for i in items]
+
+@api_router.post("/lab-orders")
+async def create_lab(data: LabOrderIn, user: dict = Depends(get_current_user)):
+    doc = {"id": str(uuid.uuid4()), "tenant_id": user["tenant_id"],
+           "created_at": datetime.now(timezone.utc).isoformat(), **data.dict()}
+    await db.lab_orders.insert_one(doc.copy())
+    return _clean(doc)
+
+@api_router.patch("/lab-orders/{lid}")
+async def update_lab(lid: str, data: LabOrderIn, user: dict = Depends(get_current_user)):
+    await db.lab_orders.update_one({"id": lid, "tenant_id": user["tenant_id"]}, {"$set": data.dict()})
+    d = await db.lab_orders.find_one({"id": lid, "tenant_id": user["tenant_id"]})
+    return _clean(d) if d else {}
+
+@api_router.delete("/lab-orders/{lid}")
+async def delete_lab(lid: str, user: dict = Depends(get_current_user)):
+    await db.lab_orders.delete_one({"id": lid, "tenant_id": user["tenant_id"]})
+    return {"ok": True}
+
+# ------------------------ Reports / Dashboard ------------------------
+
+@api_router.get("/reports/summary")
+async def summary(user: dict = Depends(get_current_user)):
+    tenant_id = user["tenant_id"]
+    financials_visible = await can_view_financials(user)
+
+    total_patients = await db.patients.count_documents({"tenant_id": tenant_id})
+    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    today_end = datetime.now().replace(hour=23, minute=59, second=59).isoformat()
+    today_appointments = await db.appointments.count_documents({
+        "tenant_id": tenant_id, "date": {"$gte": today_start, "$lte": today_end}
+    })
+
+    result = {
+        "total_patients": total_patients,
+        "today_appointments": today_appointments,
+        "financials_visible": financials_visible,
+    }
+
+    if financials_visible:
+        invoices = await db.invoices.find({"tenant_id": tenant_id}).to_list(5000)
+        revenue = sum(i.get("total", 0) for i in invoices if i.get("kind") == "patient")
+        purchases = sum(i.get("total", 0) for i in invoices if i.get("kind") == "purchase")
+        salaries = sum(i.get("total", 0) for i in invoices if i.get("kind") == "salary")
+        expenses = sum(i.get("total", 0) for i in invoices if i.get("kind") == "expense")
+        result.update({
+            "revenue": revenue,
+            "purchases": purchases,
+            "salaries": salaries,
+            "expenses": expenses,
+            "net_profit": revenue - purchases - salaries - expenses,
+        })
+
+        # Monthly breakdown (last 6 months)
+        now = datetime.now(timezone.utc)
+        months = []
+        for i in range(5, -1, -1):
+            month_dt = (now.replace(day=1) - timedelta(days=30 * i))
+            months.append({"label": month_dt.strftime("%Y-%m"), "revenue": 0, "expenses": 0})
+        for inv in invoices:
+            try:
+                d = inv.get("date", "")
+                label = d[:7]
+                m = next((mm for mm in months if mm["label"] == label), None)
+                if m:
+                    if inv.get("kind") == "patient":
+                        m["revenue"] += inv.get("total", 0)
+                    else:
+                        m["expenses"] += inv.get("total", 0)
+            except Exception:
+                pass
+        result["monthly"] = months
+
+    low_stock = await db.inventory.count_documents({
+        "tenant_id": tenant_id,
+        "$expr": {"$lte": ["$quantity", "$min_quantity"]}
+    })
+    result["low_stock_count"] = low_stock
+    return result
+
+# ------------------------ App wiring ------------------------
+
+app.include_router(api_router)
+app.add_middleware(
+    CORSMiddleware,
+    allow_credentials=True,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    client.close()

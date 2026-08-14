@@ -1,0 +1,183 @@
+{
+  "app_name": "Eayadati (عيادتي) - DentalCare Pro",
+  "personality": "1 iOS-Native Clean",
+  "personality_one_liner": "A calm, professional, and visually comfortable clinic management system that builds trust and streamlines daily dental operations.",
+  "color": {
+    "surface": "#FFFFFF",
+    "onSurface": "#1A211E",
+    "surfaceSecondary": "#F4F6F5",
+    "onSurfaceSecondary": "#384541",
+    "surfaceTertiary": "#E8ECEB",
+    "onSurfaceTertiary": "#4A5854",
+    "surfaceInverse": "#232B28",
+    "onSurfaceInverse": "#FFFFFF",
+    "brand": "#4A7065",
+    "brandPrimary": "#4A7065",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#E1E8E6",
+    "onBrandSecondary": "#334F46",
+    "brandTertiary": "#F0F4F2",
+    "onBrandTertiary": "#4A7065",
+    "success": "#3A6F54",
+    "onSuccess": "#FFFFFF",
+    "warning": "#B58548",
+    "onWarning": "#FFFFFF",
+    "error": "#A84A42",
+    "onError": "#FFFFFF",
+    "info": "#4A5854",
+    "onInfo": "#FFFFFF",
+    "border": "#E1E8E6",
+    "borderStrong": "#B0C4BC",
+    "divider": "#E8ECEB"
+  },
+  "typography": {
+    "displayFontFamily": "Tajawal",
+    "textFontFamily": "Tajawal",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Generous iOS-native rhythms. Content must breathe to avoid a dense, stressful dashboard look. Ensure safe area clearance on all scrollable views.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": "1",
+  "navigation": "bottom_tabs",
+  "icon_set": "Feather",
+  "glassmorphism": {
+    "enabled": "true",
+    "do's": [
+      "Use glass on bottom tab bar.",
+      "Use glass on sticky headers over scrolling content.",
+      "Use glass on bottom sheet handles and headers."
+    ],
+    "dont's": [
+      "Do not use glass on form inputs or standard cards.",
+      "Do not use glass if it impairs readability of Arabic text."
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Login (تسجيل الدخول)",
+      "purpose": "Secure multi-tenant login allowing doctors and assistants to sign in with specific role constraints.",
+      "states": {
+        "loading": "Centered brand spinner.",
+        "empty": "N/A",
+        "error": "Readable inline error message for incorrect credentials."
+      },
+      "layout": "Minimalist single column. Clinic interior subtle background or clean solid background with large input fields, 'Forgot Password', and sticky bottom primary 'Login' CTA."
+    },
+    {
+      "name": "Dashboard (لوحة القيادة)",
+      "purpose": "Daily operational snapshot showing today's appointments, queue, and financial charts.",
+      "states": {
+        "loading": "Skeleton cards for metrics and charts.",
+        "empty": "Illustration indicating 'No appointments scheduled today'.",
+        "error": "Refresh button with error text."
+      },
+      "layout": "Scrollable view. Top section: Summary cards (Appointments, Revenue). Middle section: Interactive Profit/Loss charts. Bottom section: Today's queue list. Use a glass sticky header with the Clinic Logo."
+    },
+    {
+      "name": "Patients & EHR (المرضى والملف الطبي)",
+      "purpose": "List of patients with search, leading to a detailed medical record (history, allergies, medications, X-rays).",
+      "states": {
+        "loading": "List skeleton.",
+        "empty": "Illustration + 'No patients found'.",
+        "error": "Error message with 'Retry' CTA."
+      },
+      "layout": "Search bar sticky at top. List of patient cards. EHR Detail Screen uses tabs or segmented controls to divide 'Medical History', 'Dental Chart', 'X-Ray Gallery', and 'Invoices'. Export PDF sticky action at bottom."
+    },
+    {
+      "name": "FDI Dental Chart (مخطط الأسنان)",
+      "purpose": "Interactive FDI (ISO 3950) tooth chart to record specific surface-level clinical findings.",
+      "states": {
+        "loading": "Spinner over chart area.",
+        "empty": "Fresh chart with all teeth healthy.",
+        "error": "Failed to load chart state, retry button."
+      },
+      "layout": "Top bar: patient name & arch selector. Center: Tappable 32-tooth odontogram shapes (not just buttons). Bottom sheet: When a tooth is tapped, pop up a sheet to select condition (caries, crown, extracted) with color codes."
+    },
+    {
+      "name": "Appointments Calendar (التقويم)",
+      "purpose": "Visual timeline of upcoming appointments and automated reminders status.",
+      "states": {
+        "loading": "Calendar skeleton.",
+        "empty": "Illustration + 'No appointments in this view'.",
+        "error": "Failed to sync calendar."
+      },
+      "layout": "Compact weekly calendar strip at top. Vertical timeline list below. Color-coded appointment chips based on status (confirmed, waiting, treated)."
+    },
+    {
+      "name": "Invoices & Billing (الفواتير)",
+      "purpose": "Digital invoice management (patients, purchases, expenses) with WhatsApp sharing.",
+      "states": {
+        "loading": "Invoice list skeleton.",
+        "empty": "Illustration + 'No invoices generated yet'.",
+        "error": "Error loading financial data."
+      },
+      "layout": "Tabbed view (Patients, Expenses, Salaries). Detail view shows itemized invoice with a sticky bottom 'Share via WhatsApp' button using the brandPrimary color."
+    },
+    {
+      "name": "Inventory & Lab (المستودع والمخبر)",
+      "purpose": "Track clinic supplies, low-stock alerts, and laboratory orders.",
+      "states": {
+        "loading": "List skeleton.",
+        "empty": "Illustration + 'Inventory is up to date'.",
+        "error": "Failed to fetch inventory."
+      },
+      "layout": "List of inventory items with visual low-stock indicators (warning color tags). Separate section for lab requests status tracking."
+    }
+  ],
+  "images": {
+    "doctor_avatar": {
+      "url": "https://images.unsplash.com/photo-1612349316228-5942a9b489c2?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Njd8MHwxfHNlYXJjaHwyfHxwcm9mZXNzaW9uYWwlMjBtaWRkbGUlMjBlYXN0ZXJuJTIwZG9jdG9yJTIwcG9ydHJhaXR8ZW58MHx8fHwxNzg2NzMyMTk3fDA&ixlib=rb-4.1.0&q=85",
+      "alt": "Professional middle eastern doctor portrait"
+    },
+    "dental_xray_placeholder": {
+      "url": "https://images.unsplash.com/photo-1619691249147-c5689d88016b?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzl8MHwxfHNlYXJjaHwxfHxkZW50YWwlMjB4LXJheXxlbnwwfHx8fDE3ODY3MzIyMTd8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Dental X-ray viewing on tablet"
+    },
+    "clinic_interior_background": {
+      "url": "https://images.unsplash.com/photo-1704455306251-b4634215d98f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MDZ8MHwxfHNlYXJjaHwxfHxkZW50YWwlMjBjbGluaWMlMjBpbnRlcmlvcnxlbnwwfHx8fDE3ODY3MzIyMTd8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Modern dental clinic interior"
+    }
+  },
+  "instructions_to_main_agent": [
+    "CRITICAL: The app MUST be fully RTL (Right-to-Left) compatible as it is in Arabic. Apply `I18nManager.forceRTL(true)` if configured globally, or utilize `flexDirection: 'row-reverse'` and appropriate text alignments (`textAlign: 'right'`) on all components.",
+    "Use 'Tajawal' from `@expo-google-fonts/tajawal` for all typography to ensure native Arabic typographic beauty.",
+    "Strictly adhere to the Sage/Slate color palette. DO NOT USE ANY BLUES OR PURPLES. These are banned. The UI should evoke a calm, medical trust feel.",
+    "For the FDI Dental Chart: Ensure you implement an interactive grid/list of 32 teeth (permanent) where each tooth acts as a tappable area, ideally using SVG shapes or highly styled React Native Views, not just standard buttons.",
+    "Dashboard and Financial charts: Render using a lightweight charting library like `react-native-chart-kit` or `react-native-gifted-charts`, styled with the provided 'brand' and 'success' tokens.",
+    "Use the `doctor_avatar` image for user profile placeholders, and `clinic_interior_background` with a heavy scrim/gradient (refer to <Imagery_and_Texture>) for the Login screen background.",
+    "Implement WhatsApp sharing for invoices using standard React Native `Linking.openURL('whatsapp://send?text=...')` or `Share.share()` API.",
+    "Multi-tenant logic: While mocking data, create separate initial views or toggles for 'Doctor' vs 'Assistant' to demonstrate role-based UI (e.g., hiding financial charts from assistants)."
+  ]
+}

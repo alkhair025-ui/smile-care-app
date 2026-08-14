@@ -1,0 +1,35 @@
+{
+  "summary": "Full-stack test for Eayadati (عيادتي) dental clinic SaaS. Backend: 37/37 pytest tests pass covering auth (login/register/JWT), RBAC financial gating (assistant blocked when show_financials_to_assistants=false, allowed when true), patients CRUD + search, dental chart upsert, x-ray upload/list/download via token (Emergent Object Storage integration working), appointments CRUD, invoices CRUD with kind filter, inventory + low-stock, lab orders CRUD, dashboard summary (net_profit + 6-month breakdown for doctor, hidden for assistant), assistant management. Frontend (Expo web, mobile viewport 390x844, RTL Arabic): login works with prefilled demo creds, doctor dashboard shows full financial summary (revenue 130, purchases 150, salaries 500, expenses 80, net_profit -600, monthly bar chart), assistant dashboard correctly hides financials with lock UI 'التقارير المالية مخفية' and invoices tab shows padlock 'ليس لديك صلاحية عرض الفواتير المالية'. Seeded patients (محمد علي/فاطمة الزهراء/خالد الحسن) and appointments render correctly in tabs. Tab navigation (الرئيسية/المرضى/المواعيد/الفواتير/المزيد) functional. RTL layout perfect. Minor RN-Web deprecation warnings observed only.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "styles (multiple)", "issue": "React Native Web console warning: '\"shadow*\" style props are deprecated. Use \"boxShadow\"'. Non-breaking but should migrate shadowColor/shadowOffset/shadowOpacity/shadowRadius to boxShadow (or use platform-specific style) for future RN Web compatibility."},
+      {"component": "pointerEvents prop", "issue": "React Native Web console warning: 'props.pointerEvents is deprecated. Use style.pointerEvents'. Move pointerEvents from prop to style object."}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_eayadati.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "(Optional/minor) Migrate shadow* style props to boxShadow across StyleSheet definitions to silence RN Web deprecation warning.",
+    "(Optional/minor) Move pointerEvents from JSX prop to style.pointerEvents."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 792 lines — approaching the 700-line split threshold. Consider splitting into modules (auth.py, patients.py, invoices.py, storage.py, reports.py) for maintainability.",
+    "Storage key init (_init_storage) uses module-level _storage_key without a lock; under concurrent first-request load two threads could double-init. Low risk in single-worker uvicorn but worth an asyncio.Lock or threading.Lock.",
+    "Tenant isolation is correctly enforced from JWT (user['tenant_id']) on all mutating endpoints — no tenant_id accepted from request body. Verified across patients/appointments/invoices/inventory/lab.",
+    "Financial gating is correctly implemented via can_view_financials() checking role + tenant.show_financials_to_assistants for both /invoices and /reports/summary."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_eayadati.py (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "No new seed data. Backend auto-seeds demo tenant on startup. Test-created TEST_* records cleaned up in fixtures/teardown. One orphan TEST_XR patient from an aborted pre-fix run was cleaned up manually via API.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend base: https://smile-care-96.preview.emergentagent.com/api. Auth: JWT Bearer. Demo creds in /app/memory/test_credentials.md (doctor@demo.com/demo1234, assistant@demo.com/demo1234). Regression pytest at /app/backend/tests/test_eayadati.py — run with `EXPO_PUBLIC_BACKEND_URL=<url> pytest backend/tests/test_eayadati.py -v`. Critical RBAC assertion: /api/invoices and financial fields in /api/reports/summary are gated by tenant.show_financials_to_assistants toggle for assistants. Frontend uses expo-router with (auth) and (tabs) groups; login screen has testIDs: login-email, login-password, login-submit-button, go-to-register. Object Storage integration is live (Emergent) and working."
+}
