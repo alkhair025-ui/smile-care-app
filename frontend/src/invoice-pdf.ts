@@ -3,14 +3,16 @@ import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { api } from '@/src/api';
 
-const money = (n: number) => `${(Number(n) || 0).toLocaleString('en')} د.أ`;
+const CUR: Record<string, string> = { SYP: 'ل.س', USD: '$' };
+const money = (n: number, cur = 'SYP') => `${(Number(n) || 0).toLocaleString('en')} ${CUR[cur] || cur}`;
 
 export function invoiceHtml(inv: any, clinic: { name?: string; phone?: string; address?: string }) {
+  const cur = inv.currency || 'SYP';
   const rows = (inv.items || [])
     .map(
       (it: any) =>
-        `<tr><td>${it.description}</td><td>${it.quantity}</td><td>${money(it.unit_price)}</td><td>${money(
-          (it.quantity || 0) * (it.unit_price || 0)
+        `<tr><td>${it.description}</td><td>${it.quantity}</td><td>${money(it.unit_price, cur)}</td><td>${money(
+          (it.quantity || 0) * (it.unit_price || 0), cur
         )}</td></tr>`
     )
     .join('');
@@ -48,9 +50,9 @@ export function invoiceHtml(inv: any, clinic: { name?: string; phone?: string; a
       ${rows}
     </table>
     <div class="totals">
-      <div>المجموع: ${money(inv.total)}</div>
-      <div>المدفوع: ${money(inv.paid)}</div>
-      <div class="grand">المتبقي: ${money((inv.total || 0) - (inv.paid || 0))}</div>
+      <div>المجموع: ${money(inv.total, cur)}</div>
+      <div>المدفوع: ${money(inv.paid, cur)}</div>
+      <div class="grand">المتبقي: ${money((inv.total || 0) - (inv.paid || 0), cur)}</div>
     </div>
     <div class="foot">شكراً لزيارتكم — تم الإصدار من نظام عيادتي</div>
   </body></html>`;
@@ -75,8 +77,8 @@ export async function shareInvoiceViaWhatsApp(
     `فاتورة من ${clinic.name || 'العيادة'}`,
     `المستفيد: ${inv.party_name}`,
     `التاريخ: ${(inv.date || '').slice(0, 10)}`,
-    `الإجمالي: ${money(inv.total)}`,
-    `المدفوع: ${money(inv.paid)}`,
+    `الإجمالي: ${money(inv.total, inv.currency || 'SYP')}`,
+    `المدفوع: ${money(inv.paid, inv.currency || 'SYP')}`,
   ];
   if (publicUrl) lines.push('', `تحميل الفاتورة PDF:`, publicUrl);
   const text = encodeURIComponent(lines.join('\n'));

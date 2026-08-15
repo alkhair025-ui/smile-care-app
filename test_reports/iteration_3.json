@@ -1,0 +1,51 @@
+{
+  "summary": "Iteration 3 backend + frontend testing for Eayadati. Backend: 20/21 iteration-3 tests PASS (1 skipped for positive reset-token flow that needs DB access), 1 FAILED — real backend bug: POST /api/auth/login does NOT check the `disabled` flag, so a disabled user still receives a valid access_token (200). Every subsequent authed request correctly returns 401 via get_current_user, but the login endpoint itself violates the spec requirement 'disabled user login must fail (401)'. All other new features verified: super_admin login role/tenant, /api/admin/doctors payload shape (id/email/full_name/role/tenant_id/clinic_name/disabled/patients_count), /api/admin/stats, admin reset-password + revert, admin refuses to reset/toggle super_admin (404), doctor/assistant hitting /api/admin/* → 403, unauth → 401, forgot-password 200 for known+unknown (no enumeration), reset-password with invalid token → 400, invoice currency default SYP + create USD + PATCH USD persistence, RBAC financials 403 for assistant, summary endpoint returns new_bookings + today_income + financials_visible. Frontend (390x844 mobile RTL): login has 'نسيت كلمة المرور؟' link (testID forgot-password-link) → routes to /forgot-password; super_admin login → routes to /(admin)/dashboard which renders 'لوحة المدير العام' with 4 doctors/5 clinics/1 assistant/7 patients cards, user list with kebab menus (reset/toggle); doctor login → dashboard shows daily summary card ملخّص اليوم (مواعيد اليوم=0, حجوزات جديدة=2, دخل اليوم=50 د.أ) plus 'لديك 2 حجز جديد بانتظار التأكيد'; invoices tab opens 'فاتورة المريض' modal with two currency chips 'ليرة سورية (ل.س)' + 'دولار ($)'. Only pre-existing RN-Web deprecation warnings (shadow*, pointerEvents) remain. Demo doctor + assistant credentials verified restored (demo1234, enabled) and super admin password unchanged.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/auth/login",
+        "issue": "Does NOT verify `user.disabled`. A disabled user still receives access_token with 200. Spec requires 401 for disabled user login. Only get_current_user rejects requests via disabled check.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "StyleSheet shadow.card (src/theme)", "issue": "RN-Web deprecation: '\"shadow*\" style props are deprecated. Use \"boxShadow\"' — carried over from iter 1/2."},
+      {"component": "pointerEvents prop", "issue": "RN-Web deprecation: 'props.pointerEvents is deprecated. Use style.pointerEvents' — carried over."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration3.py",
+    "/app/backend/tests/test_iteration2.py",
+    "/app/backend/tests/test_eayadati.py",
+    "/app/test_reports/pytest/pytest_iteration3.xml"
+  ],
+  "action_items": [
+    "Fix POST /api/auth/login to check `user.get('disabled')` and raise 401 with the same message as invalid creds — 2-line change right after the password verify: `if user.get('disabled'): raise HTTPException(401, 'الحساب معطّل')`. This is required for the super-admin toggle-disabled feature to actually block sign-in per spec.",
+    "(Optional) Add a positive-path reset-password integration test by exposing a debug-only endpoint or by inserting the token via the same code path (requires motor in tests). Current suite covers the 400 branch only.",
+    "(Optional/carry-over) Migrate `shadow*` → `boxShadow` and `pointerEvents` JSX prop → `style.pointerEvents` to silence RN-Web deprecation warnings.",
+    "(Nice-to-have) server.py is now ~1087 lines. Definitely past the 700-line split threshold — refactor into modules (auth, admin, patients, invoices, storage, public, reports, reminders)."
+  ],
+  "critical_code_review_comments": [
+    "server.py grew 918 → 1087 lines this iteration. Split into modules is now overdue.",
+    "auth/login skips the disabled check while get_current_user enforces it — inconsistent security posture; noted above as HIGH.",
+    "forgot-password correctly avoids email enumeration (always returns 200) and stores sha256-hashed tokens with TTL index on reset_tokens.expires_at — good.",
+    "admin_reset_password + admin_toggle_disabled correctly refuse when target is super_admin by returning 404 (obfuscates existence) — good.",
+    "admin_list_doctors performs N+1 (per-user tenant + patient count) queries. Fine for a few users, but consider $lookup aggregation once >100 clinics.",
+    "Invoice model default currency='SYP' is in Pydantic schema, so create/PATCH both persist correctly — verified.",
+    "Summary endpoint computes today_income by string-prefix comparison of ISO dates. Timezone-naive datetime.now() used — will drift if server tz != clinic tz. Acceptable for now.",
+    "reset_tokens.create_index expireAfterSeconds=0 requires expires_at as BSON date — currently stored as datetime.now(timezone.utc)+timedelta which is a datetime object; OK."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration3.py (new)"],
+  "success_rate": {"backend": "95.2% (20/21 in iter3 suite, 1 skipped; 1 confirmed backend bug)", "frontend": "100% of tested flows visible"},
+  "seed_data_creation": "Demo doctor + assistant credentials + enabled state verified restored after tests (demo1234, disabled=false). Super admin password unchanged. No test residue left on the demo tenant.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend base: https://smile-care-96.preview.emergentagent.com/api. Super admin: alkhair025@gmail.com / 0941317941AhmedAttar (role=super_admin, tenant_id=__super__). Demo doctor/assistant: doctor@demo.com / assistant@demo.com / demo1234 (both enabled). Suites: test_eayadati.py (37 regression), test_iteration2.py (15), test_iteration3.py (21 new — 20 pass, 1 fails on the login-disabled bug). Run with `pytest -n0` (module-scoped fixtures don't play well with xdist for admin mutations). testIDs: forgot-password-link, login-email, login-password, login-submit-button, admin dashboard renders 'لوحة المدير العام' with user cards. Invoice form currency chips are labeled 'ليرة سورية (ل.س)' and 'دولار ($)' not literal SYP/USD text — but persist as SYP/USD in DB.",
+  "rca_of_issue": "Bug: disabled user can still log in. Repro: (1) super admin POST /api/admin/users/{aid}/toggle-disabled to set disabled=true; (2) POST /api/auth/login with that user's credentials — returns 200 + JWT. Expected 401. Root cause: server.py login() only checks user existence + password (lines 442-444). It never inspects `user.get('disabled')`. get_current_user() DOES check disabled, so the JWT is unusable — but the login endpoint itself returns a token, contradicting the spec and leaking info about credential validity to disabled users. Fix: add `if user.get('disabled'): raise HTTPException(401, 'بريد أو كلمة مرور غير صحيحة')` right after password verify to preserve non-enumeration."
+}

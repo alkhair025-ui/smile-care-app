@@ -99,6 +99,24 @@ export default function Dashboard() {
           <StatCard testID="stat-lowstock" icon="alert-triangle" label="مواد ناقصة" value={data?.low_stock_count ?? 0} color={colors.warning} />
         </View>
 
+        <View style={styles.dailyCard}>
+          <View style={styles.dailyHead}>
+            <Text style={styles.cardTitle}>ملخّص اليوم</Text>
+            <Feather name="sunrise" size={18} color={colors.brand} />
+          </View>
+          <View style={styles.dailyRow}>
+            <DailyTile icon="calendar" label="مواعيد اليوم" value={data?.today_appointments ?? 0} color={colors.info} />
+            <DailyTile icon="clock" label="حجوزات جديدة" value={data?.new_bookings ?? 0} color={colors.warning} highlight={(data?.new_bookings ?? 0) > 0} />
+            {showFin && <DailyTile icon="trending-up" label="دخل اليوم" value={fmt(data?.today_income || 0)} color={colors.success} small />}
+          </View>
+          {(data?.new_bookings ?? 0) > 0 && (
+            <Pressable testID="review-bookings" onPress={() => router.push('/(tabs)/appointments')} style={styles.reviewBtn}>
+              <Feather name="arrow-left" size={14} color={colors.brand} />
+              <Text style={styles.reviewText}>لديك {data.new_bookings} حجز جديد بانتظار التأكيد</Text>
+            </Pressable>
+          )}
+        </View>
+
         {showFin ? (
           <>
             <View style={styles.card}>
@@ -156,6 +174,25 @@ function FinTile({ label, val, color }: any) {
   );
 }
 
+function DailyTile({ icon, label, value, color, highlight, small }: any) {
+  return (
+    <View style={[dailyStyles.tile, highlight && { backgroundColor: colors.warningBg }]}>
+      <View style={[dailyStyles.iconBox, { backgroundColor: color + '22' }]}>
+        <Feather name={icon} size={16} color={color} />
+      </View>
+      <Text style={[dailyStyles.value, small && { fontSize: font.base }]} numberOfLines={1}>{value}</Text>
+      <Text style={dailyStyles.label} numberOfLines={1}>{label}</Text>
+    </View>
+  );
+}
+
+const dailyStyles = StyleSheet.create({
+  tile: { flex: 1, alignItems: 'center', gap: 4, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, paddingVertical: spacing.md, paddingHorizontal: spacing.sm },
+  iconBox: { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  value: { fontSize: font.lg, fontFamily: fontFamily.bold, color: colors.onSurface },
+  label: { fontSize: 11, color: colors.muted, fontFamily: fontFamily.regular, textAlign: 'center' },
+});
+
 function Quick({ icon, label, onPress }: any) {
   return (
     <Pressable onPress={onPress} style={styles.quick}>
@@ -179,6 +216,11 @@ const styles = StyleSheet.create({
   statValue: { fontSize: font.xl, fontFamily: fontFamily.bold, color: colors.onSurface, textAlign: 'right', writingDirection: 'rtl' },
   statLabel: { fontSize: font.sm, color: colors.muted, fontFamily: fontFamily.regular, textAlign: 'right', writingDirection: 'rtl' },
   card: { backgroundColor: colors.surface, borderRadius: radius.md, padding: spacing.lg, marginTop: spacing.lg, ...shadow.card },
+  dailyCard: { backgroundColor: colors.surface, borderRadius: radius.md, padding: spacing.lg, marginTop: spacing.lg, ...shadow.card },
+  dailyHead: { flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.md },
+  dailyRow: { flexDirection: 'row-reverse', gap: spacing.sm },
+  reviewBtn: { flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: spacing.sm, marginTop: spacing.md, backgroundColor: colors.warningBg, padding: spacing.md, borderRadius: radius.md },
+  reviewText: { color: colors.warning, fontFamily: fontFamily.bold, fontSize: font.sm },
   cardTitle: { fontSize: font.lg, fontFamily: fontFamily.bold, color: colors.onSurface, marginBottom: spacing.md, textAlign: 'right', writingDirection: 'rtl' },
   finRow: { flexDirection: 'row-reverse', gap: spacing.sm, marginBottom: spacing.sm },
   finTile: { flex: 1, flexDirection: 'row-reverse', gap: spacing.sm, backgroundColor: colors.surfaceSecondary, padding: spacing.md, borderRadius: radius.md, alignItems: 'center' },

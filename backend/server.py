@@ -5,12 +5,15 @@ Multi-tenant SaaS: doctors register as tenant owners and manage assistants.
 import os
 import uuid
 import logging
+import secrets
+import hashlib
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Literal, Annotated
 
 import jwt
 import bcrypt
+import httpx
 import requests
 from bson import ObjectId
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request, status, UploadFile, File
@@ -38,6 +41,14 @@ EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
 APP_NAME = "eayadati"
 _storage_key: Optional[str] = None
 
+# Email (Emergent managed Resend)
+EMAIL_BASE_URL = "https://integrations.emergentagent.com"
+EMAIL_KEY = os.environ.get("EMERGENT_EMAIL_KEY")
+EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "عيادتي")
+FRONTEND_URL = (os.environ.get("FRONTEND_URL") or "").rstrip("/")
+SUPERADMIN_EMAIL = (os.environ.get("SUPERADMIN_EMAIL") or "").lower()
+SUPERADMIN_PASSWORD = os.environ.get("SUPERADMIN_PASSWORD") or ""
+
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 
@@ -45,7 +56,7 @@ app = FastAPI(title="Eayadati API")
 api_router = APIRouter(prefix="/api")
 oauth2 = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
-Role = Literal["doctor", "assistant"]
+Role = Literal["doctor", "assistant", "super_admin"]
 
 # ------------------------ Models ------------------------
 
@@ -128,6 +139,7 @@ class InvoiceIn(BaseModel):
     items: List[InvoiceItem] = []
     total: float = 0
     paid: float = 0
+    currency: str = "SYP"  # SYP or USD
     date: str = ""  # ISO
     note: str = ""
 
@@ -267,9 +279,26 @@ async def startup():
     await db.invoices.create_index([("tenant_id", 1), ("date", -1)])
     await db.inventory.create_index([("tenant_id", 1), ("name", 1)])
     await db.lab_orders.create_index([("tenant_id", 1)])
+    await db.reset_tokens.create_index("expires_at", expireAfterSeconds=0)
     # Seed demo account
     if not await db.users.find_one({"email": "doctor@demo.com"}):
         await _seed_demo()
+    # Seed / sync super admin owner account
+    if SUPERADMIN_EMAIL and SUPERADMIN_PASSWORD:
+        existing = await db.users.find_one({"email": SUPERADMIN_EMAIL})
+        if not existing:
+            await db.users.insert_one({
+                "email": SUPERADMIN_EMAIL,
+                "password_hash": hash_password(SUPERADMIN_PASSWORD),
+                "full_name": "المدير العام",
+                "tenant_id": "__super__",
+                "role": "super_admin",
+                "disabled": False,
+                "created_at": datetime.now(timezone.utc),
+            })
+            print(f"[SEED] Super admin created: {SUPERADMIN_EMAIL}")
+        elif existing.get("role") != "super_admin":
+            await db.users.update_one({"_id": existing["_id"]}, {"$set": {"role": "super_admin", "tenant_id": "__super__"}})
 
 async def _seed_demo():
     tenant_id = str(uuid.uuid4())
@@ -413,6 +442,8 @@ async def login(data: LoginIn):
     user = await db.users.find_one({"email": data.email.lower()})
     if not user or not verify_password(data.password, user["password_hash"]):
         raise HTTPException(401, "بريد أو كلمة مرور غير صحيحة")
+    if user.get("disabled"):
+        raise HTTPException(403, "تم تعطيل هذا الحساب. يرجى التواصل مع الإدارة.")
     tenant = await get_tenant(user["tenant_id"])
     return {"access_token": make_token(user), "token_type": "bearer", "user": public_user(user, tenant)}
 
@@ -851,10 +882,15 @@ async def summary(user: dict = Depends(get_current_user)):
     today_appointments = await db.appointments.count_documents({
         "tenant_id": tenant_id, "date": {"$gte": today_start, "$lte": today_end}
     })
+    today_date = datetime.now().strftime("%Y-%m-%d")
+    new_bookings = await db.appointments.count_documents({
+        "tenant_id": tenant_id, "status": "pending"
+    })
 
     result = {
         "total_patients": total_patients,
         "today_appointments": today_appointments,
+        "new_bookings": new_bookings,
         "financials_visible": financials_visible,
     }
 
@@ -864,6 +900,11 @@ async def summary(user: dict = Depends(get_current_user)):
         purchases = sum(i.get("total", 0) for i in invoices if i.get("kind") == "purchase")
         salaries = sum(i.get("total", 0) for i in invoices if i.get("kind") == "salary")
         expenses = sum(i.get("total", 0) for i in invoices if i.get("kind") == "expense")
+        today_income = sum(
+            i.get("total", 0) for i in invoices
+            if i.get("kind") == "patient" and str(i.get("date", "")).startswith(today_date)
+        )
+        result["today_income"] = today_income
         result.update({
             "revenue": revenue,
             "purchases": purchases,
@@ -898,6 +939,136 @@ async def summary(user: dict = Depends(get_current_user)):
     })
     result["low_stock_count"] = low_stock
     return result
+
+# ------------------------ Email (Emergent managed Resend) ------------------------
+
+async def send_email(*, to: str, subject: str, html: str) -> Optional[str]:
+    if not EMAIL_KEY:
+        raise HTTPException(500, "خدمة البريد غير مهيأة")
+    payload = {"to": [to], "subject": subject, "html": html, "from_name": EMAIL_FROM_NAME}
+    try:
+        async with httpx.AsyncClient(timeout=30) as c:
+            resp = await c.post(f"{EMAIL_BASE_URL}/api/v1/email/send",
+                                headers={"X-Email-Key": EMAIL_KEY}, json=payload)
+        resp.raise_for_status()
+        return resp.json().get("id")
+    except Exception as e:
+        logger.error(f"email send error: {e}")
+        raise HTTPException(502, "تعذّر إرسال البريد")
+
+def _reset_email_html(name: str, link: str) -> str:
+    safe_name = (name or "").replace("<", "").replace(">", "")
+    return (
+        f'<div dir="rtl" style="font-family:Arial,sans-serif;background:#F4F6F5;padding:24px">'
+        f'<table role="presentation" width="100%" style="max-width:480px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden">'
+        f'<tr><td style="background:#4A7065;padding:20px 24px"><span style="color:#fff;font-size:22px;font-weight:bold">عيادتي</span></td></tr>'
+        f'<tr><td style="padding:24px">'
+        f'<p style="color:#1A211E;font-size:16px">مرحباً {safe_name},</p>'
+        f'<p style="color:#384541;line-height:1.7">وصلنا طلب لإعادة تعيين كلمة مرور حسابك في نظام عيادتي. اضغط الزر أدناه لتعيين كلمة مرور جديدة. الرابط صالح لمدة ساعة واحدة.</p>'
+        f'<p style="text-align:center;margin:28px 0"><a href="{link}" style="background:#4A7065;color:#fff;text-decoration:none;padding:12px 28px;border-radius:10px;font-weight:bold;display:inline-block">إعادة تعيين كلمة المرور</a></p>'
+        f'<p style="color:#6B7876;font-size:13px">إذا لم تطلب ذلك، تجاهل هذه الرسالة بأمان.</p>'
+        f'<p style="color:#6B7876;font-size:12px;border-top:1px solid #E1E8E6;padding-top:12px;margin-top:20px">أُرسلت من نظام عيادتي. لا نطلب منك كلمة المرور أو أي بيانات بنكية عبر البريد.</p>'
+        f'</td></tr></table></div>'
+    )
+
+# ------------------------ Password reset ------------------------
+
+class ForgotIn(BaseModel):
+    email: EmailStr
+
+class ResetIn(BaseModel):
+    token: str
+    new_password: str = Field(min_length=6, max_length=72)
+
+def _hash_token(raw: str) -> str:
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+@api_router.post("/auth/forgot-password")
+async def forgot_password(data: ForgotIn):
+    user = await db.users.find_one({"email": data.email.lower()})
+    # Always return ok to avoid email enumeration
+    if user:
+        raw = secrets.token_urlsafe(32)
+        await db.reset_tokens.insert_one({
+            "user_id": user["_id"],
+            "token_hash": _hash_token(raw),
+            "expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
+            "used": False,
+        })
+        link = f"{FRONTEND_URL}/reset-password?token={raw}"
+        try:
+            await send_email(
+                to=user["email"],
+                subject="إعادة تعيين كلمة المرور — عيادتي",
+                html=_reset_email_html(user.get("full_name", ""), link),
+            )
+        except Exception as e:
+            logger.error(f"reset email failed: {e}")
+    return {"ok": True, "message": "إذا كان البريد مسجلاً، ستصلك رسالة بها رابط إعادة التعيين."}
+
+@api_router.post("/auth/reset-password")
+async def reset_password(data: ResetIn):
+    rec = await db.reset_tokens.find_one({"token_hash": _hash_token(data.token), "used": False})
+    if not rec:
+        raise HTTPException(400, "الرابط غير صالح أو مستخدم مسبقاً")
+    exp = rec["expires_at"]
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if exp < datetime.now(timezone.utc):
+        raise HTTPException(400, "انتهت صلاحية الرابط، اطلب رابطاً جديداً")
+    await db.users.update_one({"_id": rec["user_id"]}, {"$set": {"password_hash": hash_password(data.new_password)}})
+    await db.reset_tokens.update_one({"_id": rec["_id"]}, {"$set": {"used": True}})
+    return {"ok": True, "message": "تم تعيين كلمة المرور الجديدة بنجاح"}
+
+# ------------------------ Super Admin ------------------------
+
+class AdminResetIn(BaseModel):
+    new_password: str = Field(min_length=6, max_length=72)
+
+@api_router.get("/admin/doctors")
+async def admin_list_doctors(admin: dict = Depends(require_role("super_admin"))):
+    users = await db.users.find({"role": {"$in": ["doctor", "assistant"]}}).sort("created_at", -1).to_list(1000)
+    out = []
+    for u in users:
+        tenant = await get_tenant(u["tenant_id"])
+        patients = await db.patients.count_documents({"tenant_id": u["tenant_id"]})
+        out.append({
+            "id": str(u["_id"]),
+            "email": u["email"],
+            "full_name": u.get("full_name", ""),
+            "role": u["role"],
+            "tenant_id": u["tenant_id"],
+            "clinic_name": tenant.get("clinic_name", ""),
+            "disabled": u.get("disabled", False),
+            "patients_count": patients,
+            "created_at": u["created_at"].isoformat() if isinstance(u.get("created_at"), datetime) else u.get("created_at"),
+        })
+    return out
+
+@api_router.post("/admin/users/{user_id}/reset-password")
+async def admin_reset_password(user_id: str, data: AdminResetIn, admin: dict = Depends(require_role("super_admin"))):
+    target = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not target or target.get("role") == "super_admin":
+        raise HTTPException(404, "المستخدم غير موجود")
+    await db.users.update_one({"_id": ObjectId(user_id)}, {"$set": {"password_hash": hash_password(data.new_password)}})
+    return {"ok": True, "message": "تمت إعادة تعيين كلمة المرور"}
+
+@api_router.post("/admin/users/{user_id}/toggle-disabled")
+async def admin_toggle_disabled(user_id: str, admin: dict = Depends(require_role("super_admin"))):
+    target = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not target or target.get("role") == "super_admin":
+        raise HTTPException(404, "المستخدم غير موجود")
+    new_val = not target.get("disabled", False)
+    await db.users.update_one({"_id": ObjectId(user_id)}, {"$set": {"disabled": new_val}})
+    return {"ok": True, "disabled": new_val}
+
+@api_router.get("/admin/stats")
+async def admin_stats(admin: dict = Depends(require_role("super_admin"))):
+    doctors = await db.users.count_documents({"role": "doctor"})
+    assistants = await db.users.count_documents({"role": "assistant"})
+    clinics = await db.tenants.count_documents({})
+    patients = await db.patients.count_documents({})
+    return {"doctors": doctors, "assistants": assistants, "clinics": clinics, "patients": patients}
 
 # ------------------------ App wiring ------------------------
 

@@ -97,6 +97,10 @@ export default function LoginScreen() {
             {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryBtnText}>تسجيل الدخول</Text>}
           </Pressable>
 
+          <Pressable testID="forgot-password-link" onPress={() => router.push('/(auth)/forgot-password')} style={styles.forgotBtn}>
+            <Text style={styles.forgotText}>نسيت كلمة المرور؟</Text>
+          </Pressable>
+
           <View style={styles.divider}><View style={styles.line} /><Text style={styles.dividerText}>أو</Text><View style={styles.line} /></View>
 
           <Pressable
@@ -136,6 +140,8 @@ const styles = StyleSheet.create({
   err: { color: colors.error, backgroundColor: colors.errorBg, padding: spacing.md, borderRadius: radius.md, textAlign: 'right', writingDirection: 'rtl', fontFamily: fontFamily.regular, marginBottom: spacing.md },
   primaryBtn: { backgroundColor: colors.brand, paddingVertical: 16, borderRadius: radius.md, alignItems: 'center', marginTop: spacing.md },
   primaryBtnText: { color: '#fff', fontSize: font.lg, fontFamily: fontFamily.bold },
+  forgotBtn: { alignSelf: 'center', marginTop: spacing.md, padding: spacing.sm },
+  forgotText: { color: colors.brand, fontFamily: fontFamily.medium, fontSize: font.base },
   divider: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, marginVertical: spacing.xl },
   line: { flex: 1, height: 1, backgroundColor: colors.border },
   dividerText: { color: colors.muted, fontFamily: fontFamily.regular },

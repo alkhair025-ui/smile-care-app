@@ -29,9 +29,12 @@ function AuthGate() {
     if (loading) return;
     const inAuthGroup = segments[0] === '(auth)';
     const inPublicGroup = segments[0] === 'book';
+    const inAdminGroup = segments[0] === '(admin)';
     if (!user && !inAuthGroup && !inPublicGroup) {
       router.replace('/(auth)/login');
-    } else if (user && (inAuthGroup || segments.length === 0)) {
+    } else if (user && user.role === 'super_admin' && !inAdminGroup) {
+      router.replace('/(admin)/dashboard');
+    } else if (user && user.role !== 'super_admin' && (inAuthGroup || segments.length === 0)) {
       router.replace('/(tabs)/dashboard');
     }
   }, [user, loading, segments]);

@@ -5,7 +5,7 @@ import { storage } from '@/src/utils/storage';
 const TOKEN_KEY = 'eayadati_token';
 const USER_KEY = 'eayadati_user';
 
-export type Role = 'doctor' | 'assistant';
+export type Role = 'doctor' | 'assistant' | 'super_admin';
 export type User = {
   id: string;
   email: string;
@@ -65,6 +65,13 @@ export const api = {
   login: (payload: { email: string; password: string }) =>
     request<{ access_token: string; user: User }>('/auth/login', { method: 'POST', body: payload, auth: false }),
   me: () => request<User>('/auth/me'),
+  forgotPassword: (email: string) => request('/auth/forgot-password', { method: 'POST', body: { email }, auth: false }),
+  resetPassword: (token: string, new_password: string) => request('/auth/reset-password', { method: 'POST', body: { token, new_password }, auth: false }),
+
+  adminListDoctors: () => request<any[]>('/admin/doctors'),
+  adminStats: () => request<any>('/admin/stats'),
+  adminResetPassword: (userId: string, new_password: string) => request(`/admin/users/${userId}/reset-password`, { method: 'POST', body: { new_password } }),
+  adminToggleDisabled: (userId: string) => request<any>(`/admin/users/${userId}/toggle-disabled`, { method: 'POST' }),
 
   listAssistants: () => request<User[]>('/auth/assistants'),
   createAssistant: (payload: { email: string; password: string; full_name: string }) =>

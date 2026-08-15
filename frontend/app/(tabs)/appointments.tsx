@@ -1,31 +1,35 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, Pressable, TextInput, Modal, ScrollView, ActivityIndicator, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, Text, StyleSheet, FlatList, Pressable, TextInput, Modal, ScrollView, ActivityIndicator, KeyboardAvoidingView, Platform, Linking } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { colors, spacing, radius, font, fontFamily, shadow } from '@/src/theme';
 import { api } from '@/src/api';
 
 function toDateKey(iso: string) { return (iso || '').slice(0, 10); }
 
 export default function Appointments() {
+  const router = useRouter();
   const [items, setItems] = useState<any[]>([]);
+  const [phones, setPhones] = useState<Record<string, string>>({});
+  const [clinicName, setClinicName] = useState('العيادة');
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
-    try { setItems(await api.listAppointments()); } finally { setLoading(false); }
+    try {
+      setItems(await api.listAppointments());
+      try { const ps = await api.listPatients(); const m: Record<string, string> = {}; ps.forEach((p: any) => { m[p.id] = p.phone; }); setPhones(m); } catch { /* noop */ }
+      try { const s = await api.getSettings(); setClinicName(s.clinic_name || 'العيادة'); } catch { /* noop */ }
+    } finally { setLoading(false); }
   }, []);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   const grouped = useMemo(() => {
     const map: Record<string, any[]> = {};
-    for (const it of items) {
-      const k = toDateKey(it.date);
-      (map[k] = map[k] || []).push(it);
-    }
+    for (const it of items) { const k = toDateKey(it.date); (map[k] = map[k] || []).push(it); }
     return Object.entries(map).sort(([a], [b]) => a.localeCompare(b));
   }, [items]);
 
@@ -34,13 +38,21 @@ export default function Appointments() {
     load();
   };
 
+  const confirmAndNotify = async (a: any) => {
+    await setStatus(a, 'confirmed');
+    const phone = (phones[a.patient_id] || '').replace(/[^\d]/g, '');
+    const msg = encodeURIComponent(`مرحباً ${a.patient_name}، تم تأكيد موعدك في ${clinicName} بتاريخ ${toDateKey(a.date)} الساعة ${a.date.slice(11, 16)}. نراكم قريباً!`);
+    Linking.openURL(phone ? `https://wa.me/${phone}?text=${msg}` : `https://wa.me/?text=${msg}`).catch(() => {});
+  };
+
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>المواعيد</Text>
-        <Pressable testID="add-appt-btn" onPress={() => setShowAdd(true)} style={styles.addBtn}>
-          <Feather name="plus" size={22} color="#fff" />
-        </Pressable>
+        <View style={{ flexDirection: 'row-reverse', gap: spacing.sm }}>
+          <Pressable testID="reminders-btn" onPress={() => router.push('/more/reminders')} style={styles.iconBtn}><Feather name="bell" size={20} color={colors.brand} /></Pressable>
+          <Pressable testID="add-appt-btn" onPress={() => setShowAdd(true)} style={styles.addBtn}><Feather name="plus" size={22} color="#fff" /></Pressable>
+        </View>
       </View>
       {loading ? (
         <View style={styles.center}><ActivityIndicator color={colors.brand} /></View>
@@ -66,10 +78,10 @@ export default function Appointments() {
                     <Text style={styles.name}>{a.patient_name}</Text>
                     <Text style={styles.meta}>{a.reason || 'موعد'}</Text>
                     {a.status === 'pending' && (
-                      <View style={styles.pendingBadge}>
-                        <Feather name="clock" size={11} color={colors.warning} />
-                        <Text style={styles.pendingText}>حجز جديد بانتظار التأكيد</Text>
-                      </View>
+                      <Pressable testID={`appt-confirm-notify-${a.id}`} onPress={() => confirmAndNotify(a)} style={styles.confirmBtn}>
+                        <Feather name="check-circle" size={13} color="#fff" />
+                        <Text style={styles.confirmText}>تأكيد وإشعار المريض</Text>
+                      </Pressable>
                     )}
                   </View>
                   <View style={styles.statusChips}>
@@ -176,6 +188,7 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: spacing.lg, paddingVertical: spacing.md, backgroundColor: colors.surface },
   headerTitle: { fontSize: font.xl, fontFamily: fontFamily.bold, color: colors.onSurface, textAlign: 'right', writingDirection: 'rtl' },
   addBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center' },
+  iconBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.brandTertiary, alignItems: 'center', justifyContent: 'center' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: spacing.md },
   emptyText: { color: colors.muted, fontFamily: fontFamily.regular },
   dayHeader: { fontSize: font.base, fontFamily: fontFamily.bold, color: colors.onSurfaceSecondary, marginBottom: spacing.sm, textAlign: 'right', writingDirection: 'rtl' },
@@ -187,6 +200,8 @@ const styles = StyleSheet.create({
   statusChips: { flexDirection: 'row-reverse', gap: 4 },
   pendingBadge: { flexDirection: 'row-reverse', alignItems: 'center', gap: 4, alignSelf: 'flex-end', marginTop: 4, backgroundColor: colors.warningBg, paddingHorizontal: spacing.sm, paddingVertical: 2, borderRadius: radius.pill },
   pendingText: { color: colors.warning, fontSize: 10, fontFamily: fontFamily.medium },
+  confirmBtn: { flexDirection: 'row-reverse', alignItems: 'center', gap: 4, alignSelf: 'flex-end', marginTop: 6, backgroundColor: colors.success, paddingHorizontal: spacing.md, paddingVertical: 6, borderRadius: radius.pill },
+  confirmText: { color: '#fff', fontSize: 11, fontFamily: fontFamily.bold },
   chip: { paddingHorizontal: spacing.sm, paddingVertical: 4, borderRadius: radius.pill, borderWidth: 1 },
   modalOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: 'flex-end' },
   modalSheet: { backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '90%' },
