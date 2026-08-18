@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, RefreshControl, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, RefreshControl, ActivityIndicator, Modal } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -10,15 +10,16 @@ import { api } from '@/src/api';
 
 const fmt = (n: number) => `${Math.round(n).toLocaleString('en')} ل.س`;
 
-function StatCard({ icon, label, value, color, testID }: any) {
+function StatCard({ icon, label, value, color, testID, onPress }: any) {
+  const Container: any = onPress ? Pressable : View;
   return (
-    <View testID={testID} style={[styles.stat, { borderTopColor: color }]}>
+    <Container testID={testID} onPress={onPress} style={[styles.stat, { borderTopColor: color }]}>
       <View style={[styles.statIcon, { backgroundColor: color + '22' }]}>
         <Feather name={icon} size={20} color={color} />
       </View>
       <Text style={styles.statValue} numberOfLines={1}>{value}</Text>
       <Text style={styles.statLabel} numberOfLines={1}>{label}</Text>
-    </View>
+    </Container>
   );
 }
 
@@ -59,6 +60,19 @@ export default function Dashboard() {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [lowStockOpen, setLowStockOpen] = useState(false);
+  const [lowStockItems, setLowStockItems] = useState<any[]>([]);
+  const [lowStockLoading, setLowStockLoading] = useState(false);
+
+  const openLowStock = async () => {
+    setLowStockOpen(true);
+    setLowStockLoading(true);
+    try {
+      const all = await api.listInventory();
+      setLowStockItems(all.filter((i: any) => (i.quantity ?? 0) <= (i.min_quantity ?? 0)));
+    } catch { setLowStockItems([]); }
+    finally { setLowStockLoading(false); }
+  };
 
   const load = useCallback(async () => {
     try {
@@ -94,9 +108,9 @@ export default function Dashboard() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.brand} />}
       >
         <View style={styles.statRow}>
-          <StatCard testID="stat-patients" icon="users" label="إجمالي المرضى" value={data?.total_patients ?? 0} color={colors.brand} />
-          <StatCard testID="stat-appointments" icon="calendar" label="مواعيد اليوم" value={data?.today_appointments ?? 0} color={colors.info} />
-          <StatCard testID="stat-lowstock" icon="alert-triangle" label="مواد ناقصة" value={data?.low_stock_count ?? 0} color={colors.warning} />
+          <StatCard testID="stat-patients" icon="users" label="إجمالي المرضى" value={data?.total_patients ?? 0} color={colors.brand} onPress={() => router.push('/(tabs)/patients')} />
+          <StatCard testID="stat-appointments" icon="calendar" label="مواعيد اليوم" value={data?.today_appointments ?? 0} color={colors.info} onPress={() => router.push('/(tabs)/appointments')} />
+          <StatCard testID="stat-lowstock" icon="alert-triangle" label="مواد ناقصة" value={data?.low_stock_count ?? 0} color={colors.warning} onPress={openLowStock} />
         </View>
 
         <View style={styles.dailyCard}>
@@ -158,6 +172,42 @@ export default function Dashboard() {
           <Quick icon="package" label="المستودع" onPress={() => router.push('/more/inventory')} />
         </View>
       </ScrollView>
+
+      <Modal visible={lowStockOpen} transparent animationType="slide" onRequestClose={() => setLowStockOpen(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHeader}>
+              <Pressable testID="lowstock-close" onPress={() => setLowStockOpen(false)} hitSlop={8}><Feather name="x" size={22} color={colors.onSurface} /></Pressable>
+              <Text style={styles.modalTitle}>المواد الناقصة</Text>
+              <View style={{ width: 22 }} />
+            </View>
+            {lowStockLoading ? (
+              <View style={{ padding: spacing.xl }}><ActivityIndicator color={colors.brand} /></View>
+            ) : lowStockItems.length === 0 ? (
+              <View style={styles.lowEmpty}>
+                <Feather name="check-circle" size={40} color={colors.success} />
+                <Text style={styles.lowEmptyText}>لا توجد مواد ناقصة حالياً 👍</Text>
+              </View>
+            ) : (
+              <ScrollView contentContainerStyle={{ padding: spacing.lg }}>
+                {lowStockItems.map((it) => (
+                  <View key={it.id} style={styles.lowRow}>
+                    <View style={styles.lowIcon}><Feather name="alert-triangle" size={18} color={colors.warning} /></View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.lowName}>{it.name}</Text>
+                      <Text style={styles.lowMeta}>{it.category} · المتبقّي {it.quantity} {it.unit} (الحد الأدنى {it.min_quantity})</Text>
+                    </View>
+                  </View>
+                ))}
+              </ScrollView>
+            )}
+            <Pressable testID="lowstock-goto-inventory" onPress={() => { setLowStockOpen(false); router.push('/more/inventory'); }} style={styles.lowGotoBtn}>
+              <Feather name="package" size={16} color="#fff" />
+              <Text style={styles.lowGotoText}>فتح المستودع</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -241,4 +291,16 @@ const styles = StyleSheet.create({
   legendItem: { flexDirection: 'row-reverse', alignItems: 'center', gap: spacing.xs },
   legendDot: { width: 10, height: 10, borderRadius: 5 },
   legendText: { fontSize: font.sm, color: colors.muted, fontFamily: fontFamily.regular },
+  modalOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: 'flex-end' },
+  modalSheet: { backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '80%', paddingBottom: spacing.lg },
+  modalHeader: { flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center', padding: spacing.lg, borderBottomWidth: 1, borderBottomColor: colors.divider },
+  modalTitle: { fontSize: font.lg, fontFamily: fontFamily.bold, color: colors.onSurface },
+  lowEmpty: { alignItems: 'center', gap: spacing.md, padding: spacing.xxl },
+  lowEmptyText: { color: colors.muted, fontFamily: fontFamily.regular },
+  lowRow: { flexDirection: 'row-reverse', alignItems: 'center', gap: spacing.md, backgroundColor: colors.surfaceSecondary, padding: spacing.md, borderRadius: radius.md, marginBottom: spacing.sm },
+  lowIcon: { width: 38, height: 38, borderRadius: 10, backgroundColor: colors.warningBg, alignItems: 'center', justifyContent: 'center' },
+  lowName: { fontSize: font.base, fontFamily: fontFamily.bold, color: colors.onSurface, textAlign: 'right', writingDirection: 'rtl' },
+  lowMeta: { color: colors.muted, fontFamily: fontFamily.regular, fontSize: font.sm, textAlign: 'right', writingDirection: 'rtl' },
+  lowGotoBtn: { flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: spacing.sm, backgroundColor: colors.brand, marginHorizontal: spacing.lg, paddingVertical: 14, borderRadius: radius.md },
+  lowGotoText: { color: '#fff', fontFamily: fontFamily.bold },
 });

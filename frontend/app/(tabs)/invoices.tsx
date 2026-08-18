@@ -6,7 +6,6 @@ import { useFocusEffect } from 'expo-router';
 import { colors, spacing, radius, font, fontFamily, shadow } from '@/src/theme';
 import { api } from '@/src/api';
 import { useAuth } from '@/src/auth-context';
-import { exportInvoicePdf } from '@/src/invoice-pdf';
 import { sharePortalViaWhatsApp } from '@/src/portal-share';
 
 const KIND_LABELS: Record<string, string> = { patient: 'المرضى', purchase: 'المشتريات', expense: 'المصاريف', salary: 'الرواتب' };
@@ -127,10 +126,9 @@ export default function Invoices() {
                 <Text style={styles.name}>{item.party_name}</Text>
                 <Text style={styles.meta}>{(item.date || '').slice(0, 10)} · {item.items?.length || 0} بند</Text>
                 <View style={styles.actionsRow}>
-                  <Pressable testID={`inv-pdf-${item.id}`} onPress={() => exportInvoicePdf(item, clinicInfo)} style={styles.miniBtn}><Feather name="download" size={12} color={colors.brand} /><Text style={styles.miniText}>PDF</Text></Pressable>
                   {tab === 'patient' && (
                     <Pressable testID={`wa-share-${item.id}`} onPress={() => onShare(item)} disabled={busyId === item.id} style={[styles.miniBtn, { backgroundColor: colors.success + '18' }]}>
-                      {busyId === item.id ? <ActivityIndicator size="small" color={colors.success} /> : (<><Feather name="share-2" size={12} color={colors.success} /><Text style={[styles.miniText, { color: colors.success }]}>واتساب</Text></>)}
+                      {busyId === item.id ? <ActivityIndicator size="small" color={colors.success} /> : (<><Feather name="share-2" size={12} color={colors.success} /><Text style={[styles.miniText, { color: colors.success }]}>إرسال رابط المريض</Text></>)}
                     </Pressable>
                   )}
                 </View>

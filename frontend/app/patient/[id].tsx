@@ -5,12 +5,9 @@ import { Feather } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
-import * as Print from 'expo-print';
-import * as Sharing from 'expo-sharing';
 import { Image } from 'expo-image';
 import { colors, spacing, radius, font, fontFamily, shadow, toothColors, toothLabels } from '@/src/theme';
 import { api } from '@/src/api';
-import { exportInvoicePdf } from '@/src/invoice-pdf';
 import { sharePortalViaWhatsApp } from '@/src/portal-share';
 
 const UP_RIGHT = [18, 17, 16, 15, 14, 13, 12, 11];
@@ -126,42 +123,6 @@ export default function PatientDetail() {
     } finally { setUploading(false); }
   };
 
-  const exportPatientPdf = async () => {
-    if (!patient) return;
-    const chartRows = Object.values(chart).map((t: any) => `<tr><td>${t.tooth}</td><td>${toothLabels[t.condition] || t.condition}</td><td>${t.note || ''}</td></tr>`).join('');
-    const invRows = invoices.map((i: any) => `<tr><td>${(i.date || '').slice(0, 10)}</td><td>${(i.items || []).map((x: any) => x.description).join(', ')}</td><td>${i.total} ${i.currency === 'USD' ? '$' : 'ل.س'}</td></tr>`).join('');
-    const html = `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><style>
-      body{font-family:Tajawal, Arial, sans-serif; padding:32px; color:#1A211E;}
-      h1{color:#4A7065; margin-bottom:4px;} .sub{color:#6B7876; margin-bottom:24px;}
-      h2{color:#334F46; border-bottom:2px solid #E1E8E6; padding-bottom:6px; margin-top:24px;}
-      .field{margin:6px 0;} .field b{color:#4A7065;}
-      table{width:100%; border-collapse:collapse; margin-top:8px;}
-      th,td{border:1px solid #E1E8E6; padding:8px; text-align:right; font-size:13px;}
-      th{background:#F0F4F2; color:#334F46;}
-      .foot{margin-top:32px; color:#6B7876; font-size:12px; text-align:center;}
-    </style></head><body>
-      <h1>الملف الطبي الختامي</h1>
-      <div class="sub">${patient.full_name} — ${new Date().toLocaleDateString('ar-EG')}</div>
-      <h2>معلومات المريض</h2>
-      <div class="field"><b>الاسم:</b> ${patient.full_name}</div>
-      <div class="field"><b>الهاتف:</b> ${patient.phone || '—'}</div>
-      <div class="field"><b>تاريخ الميلاد:</b> ${patient.date_of_birth || '—'}</div>
-      <div class="field"><b>التاريخ المرضي:</b> ${patient.medical_history || '—'}</div>
-      <div class="field"><b>الحساسية:</b> ${patient.allergies || '—'}</div>
-      <div class="field"><b>الأدوية:</b> ${patient.medications || '—'}</div>
-      <div class="field"><b>ملاحظات الطبيب:</b> ${patient.doctor_notes || '—'}</div>
-      <h2>مخطط الأسنان</h2>
-      ${chartRows ? `<table><tr><th>السن</th><th>الحالة</th><th>ملاحظات</th></tr>${chartRows}</table>` : '<p>لا يوجد سجل.</p>'}
-      <h2>الفواتير</h2>
-      ${invRows ? `<table><tr><th>التاريخ</th><th>البنود</th><th>الإجمالي</th></tr>${invRows}</table>` : '<p>لا توجد فواتير.</p>'}
-      <div class="foot">تم إصدار هذا التقرير من نظام عيادتي</div>
-    </body></html>`;
-    try {
-      if (Platform.OS === 'web') await Print.printAsync({ html });
-      else { const { uri } = await Print.printToFileAsync({ html }); if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(uri); }
-    } catch (e: any) { console.warn('pdf', e.message); }
-  };
-
   const clinicInfo = { name: clinic.clinic_name, phone: clinic.clinic_phone, address: clinic.clinic_address };
   const onShareInvoice = async () => {
     setSharingId('portal');
@@ -180,9 +141,7 @@ export default function PatientDetail() {
           <Feather name="chevron-right" size={26} color={colors.onSurface} />
         </Pressable>
         <Text style={styles.headerTitle} numberOfLines={1}>{patient.full_name}</Text>
-        <Pressable onPress={exportPatientPdf} testID="export-pdf-btn" hitSlop={8}>
-          <Feather name="download" size={22} color={colors.brand} />
-        </Pressable>
+        <View style={{ width: 26 }} />
       </View>
 
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: spacing.xxxl }}>
@@ -276,12 +235,6 @@ export default function PatientDetail() {
               {(i.items || []).map((it: any, idx: number) => (
                 <Text key={idx} style={styles.infoLabel}>• {it.description} ({it.quantity} × {it.unit_price})</Text>
               ))}
-              <View style={styles.invActions}>
-                <Pressable testID={`inv-pdf-${i.id}`} onPress={() => exportInvoicePdf(i, clinicInfo)} style={styles.pdfBtn}>
-                  <Feather name="printer" size={14} color={colors.brand} />
-                  <Text style={styles.pdfBtnText}>طباعة / PDF</Text>
-                </Pressable>
-              </View>
             </View>
           ))}
         </SectionCard>
