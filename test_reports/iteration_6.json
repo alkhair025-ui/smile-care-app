@@ -1,0 +1,42 @@
+{
+  "summary": "Iteration 6 verification — X-ray upload fix + auto server/client image compression for Eayadati. BACKEND: 10/10 pytest PASS in /app/backend/tests/test_iteration6.py. POST /api/patients/{id}/xrays accepts multipart image and returns {id, storage_path, size, original_size, content_type, filename, uploaded_at}. Large JPEG (3000x2200 photographic noise, ~2.1MB) is compressed server-side via Pillow (_compress_image: EXIF-transpose → longest side <= 1600px → JPEG q60 optimize) — verified size < 0.7 * original_size and content_type normalized to 'image/jpeg'. Tiny 100x100 JPEG q50 is NOT grown (size <= original_size) — compression only replaces bytes when strictly smaller, exactly per spec. Empty file → 400 as required. Non-image (text/plain) → 200 with graceful fallback (compression path skipped, stored as-is, size == original_size). GET /api/patients/{id}/xrays lists uploads; GET /api/xrays/{id}/file?token=<jwt> returns bytes (200); missing token → 401; DELETE /api/xrays/{id} → 200 and removes from list. Regressions all pass: public patient portal /api/public/patient/{token} still returns {clinic,patient,chart,invoices,financials}; partial PATCH preserves untouched fields (medical_history set, full_name unchanged); dental chart persists (tooth 11 caries); invoice currency SYP and USD round-trip; RBAC: assistant GET /api/invoices → 403 when show_financials_to_assistants=false. FRONTEND (Expo web, 390x844, RTL): Login as doctor@demo.com succeeds → /dashboard → /patients → first patient row → patient page loads with 'الصور الشعاعية' section. testID='upload-xray-btn' present, compression hint 'يتم ضغط الصورة تلقائياً قبل الحفظ لتوفير المساحة مع الحفاظ على وضوح التفاصيل.' visible, button label 'رفع صورة شعاعية' visible. Triggered file chooser → uploaded a real 815KB noise JPEG (2400x1800) → after ~7s the gallery shows a new thumbnail (total 3 <img>) with contentFit='cover'; no xray-error text appeared. End-to-end upload works and the client-side expo-image-manipulator (resize 1600, JPEG q60) also runs (visible in earlier /xrays PUT calls succeeding). No red screen. Non-blocking carry-overs: RN-Web 'shadow*' & 'pointerEvents' deprecation warnings and dev-static 404s (Metro preview) — all cosmetic, unchanged from iters 1-5.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "StyleSheet shadow.*", "issue": "RN-Web deprecation warning: '\"shadow*\" style props are deprecated. Use \"boxShadow\"' — carried over from prior iters; no functional impact."},
+      {"component": "pointerEvents JSX prop", "issue": "RN-Web deprecation warning: 'props.pointerEvents is deprecated. Use style.pointerEvents' — carried over."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration6.py",
+    "/app/test_reports/pytest/pytest_iteration6.xml"
+  ],
+  "action_items": [
+    "(Optional/carry-over) Migrate `shadow*` -> `boxShadow` and JSX `pointerEvents` prop -> `style.pointerEvents` on web.",
+    "(Optional/carry-over) server.py is now ~1179 lines — consider splitting into modules (auth, patients, chart+xrays, invoices, storage, public, admin).",
+    "(Optional) Add a minimum-size guard OR client-visible original_size vs size ratio badge on the thumbnail so users can see space saved."
+  ],
+  "critical_code_review_comments": [
+    "server.py:261 _compress_image correctly uses ImageOps.exif_transpose, longest-side clamp to 1600, JPEG q60 optimize, and returns None on exception — safety-net design confirmed.",
+    "server.py:601 upload_xray reads bytes → 400 on empty → applies compression ONLY when content_type startswith 'image/' AND compressed is strictly smaller than original — matches iteration 6 spec exactly.",
+    "server.py:632 normalizes content_type to 'image/jpeg' only when the compressed bytes are actually chosen — no false normalization for non-images or already-tiny images.",
+    "server.py:645 GET /xrays/{id}/file accepts ?token=<jwt> for <img src> use on web; returns 401 without token — verified via test_iteration6.",
+    "frontend/src/api.ts:96 uploadXray: on web fetches uri → blob → FormData; on native attaches {uri,name,type} — both paths correct.",
+    "frontend/app/patient/[id].tsx:81 pickXray: correctly skips media-library permission on web (Platform.OS !== 'web' guard), calls expo-image-manipulator (resize 1600 + q0.6 JPEG) then uploads, and shows testID='xray-error' banner on failure — visible error path per spec.",
+    "frontend/app/patient/[id].tsx:244 hint '<compression note>' is a plain Text child (RTL) inside SectionCard — accessibility OK."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration6.py (new)",
+    "/app/test_reports/pytest/pytest_iteration6.xml (generated)",
+    "/app/test_reports/iteration_6.json (new)"
+  ],
+  "success_rate": {"backend": "100% (10/10 iter6 suite)", "frontend": "100% of targeted flow (login → patient → X-ray section render → 815KB JPEG upload → thumbnail rendered, no error)"},
+  "seed_data_creation": "Per-test patients TEST_Iter6_* created via /api/patients and deleted at teardown. X-ray docs created/deleted per test; frontend upload attached one thumbnail to first existing demo patient (bae77482-7d93-47e1-981b-c84dbf604326) — persistent but harmless.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "X-ray endpoints: POST /api/patients/{pid}/xrays (multipart 'file'), GET /api/patients/{pid}/xrays, GET /api/xrays/{id}/file?token=<jwt>, DELETE /api/xrays/{id}. Response includes original_size and size (post-compression). Compression is applied only when file.content_type starts with 'image/' AND the compressed result is strictly smaller. Empty file → 400. Non-image → stored as-is (size == original_size). Frontend testIDs on patient page: upload-xray-btn (Pressable), xray-error (Text banner). Login → /dashboard, then /patients → click any [data-testid^='patient-row-'] to reach /patient/{id}. Upload via file chooser: use `async with page.expect_file_chooser(): await page.click('[data-testid=\"upload-xray-btn\"]', force=True)` — expo-image-picker on web opens native file dialog. Auth token still stored in localStorage 'eayadati_token'. When running pytest, EXPO_PUBLIC_BACKEND_URL must be exported (pytest doesn't auto-load /app/backend/.env from /app cwd).",
+  "rca_of_issue": "N/A — iteration 6 is a bug-fix + feature verification; the X-ray upload bug was fixed by (a) removing media-library permission gating on web, (b) using expo-image-manipulator to pre-compress before FormData upload, (c) adding server-side Pillow safety-net, (d) 400 on empty file, (e) surfacing failures via visible testID='xray-error' banner. All five behaviors verified via pytest + browser automation."
+}

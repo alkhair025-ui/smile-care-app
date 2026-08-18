@@ -1,0 +1,31 @@
+{
+  "summary": "Iteration 7 (frontend-only) verified end-to-end via Playwright at mobile viewport (390x844) with doctor@demo.com. All 4 requested changes work: (1) Dashboard 'stat-patients' card navigates to /patients. (2) 'stat-lowstock' opens the bottom-sheet Modal, correctly lists only low-stock items (demo item 'مادة حشو ضوئي', qty 3 / min 5), lowstock-close and lowstock-goto-inventory both work and the latter routes to /more/inventory. (3) Patient file page /patient/{id} no longer renders export-pdf-btn (count=0) and body contains no 'PDF' text; pt-back still works and returns to /patients; share-portal-btn and open-billing-btn are still present. (4) Invoices tab has zero inv-pdf-* buttons across all 4 sub-tabs (patient/purchase/salary/expense); patient invoices show 4 wa-share-* buttons; inv-menu-* kebab still opens with inv-edit-btn and inv-delete-btn. Bonus: stat-appointments card is rendered and pressable (Pressable when onPress provided). No red screens or runtime errors. Only console noise is expo/react-native-web deprecation warnings ('shadow*' style props, props.pointerEvents) which are pre-existing and not blocking.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "StyleSheet shadow.card", "issue": "Console warning: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' emitted continuously by react-native-web. Reference: /app/frontend/src/theme.ts shadow object used across dashboard/invoices/patient screens."},
+      {"component": "pointerEvents prop", "issue": "Console warning: 'props.pointerEvents is deprecated. Use style.pointerEvents'. Likely from a library, non-blocking."}
+    ]
+  },
+  "test_report_links": ["/app/test_reports/iteration_7.json"],
+  "action_items": [
+    "(Nice-to-have) Migrate shadow.card StyleSheet entries in /app/frontend/src/theme.ts to use boxShadow to silence the recurring react-native-web deprecation warning.",
+    "No functional issues detected for the current iteration's scope; ready to ship."
+  ],
+  "critical_code_review_comments": [
+    "dashboard.tsx StatCard correctly switches Container to Pressable only when onPress is provided; passes onPress explicitly to stat-patients, stat-appointments, stat-lowstock. Good.",
+    "Low-stock modal filters client-side with (i.quantity ?? 0) <= (i.min_quantity ?? 0); safe against undefined values. Empty state ('لا توجد مواد ناقصة حالياً') and 'فتح المستودع' navigation are correctly wired.",
+    "patient/[id].tsx: export-pdf-btn fully removed from header; kept pt-back; invoice section keeps only open-billing-btn and share-portal-btn; no PDF/print button on invoice cards.",
+    "(tabs)/invoices.tsx: All inv-pdf-* buttons and pdfBtn usages removed; only wa-share-* remain for patient invoices; kebab menu (inv-menu-*) still supports edit/delete with role gating for delete."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (frontend-only)", "frontend": "100%"},
+  "seed_data_creation": "None; used existing demo seed (one low-stock item 'مادة حشو ضوئي' qty=3 min=5, 4 patient invoices).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All iteration-7 requirements verified. Screenshots: /tmp/dash.png (dashboard), /tmp/lowstock.png (modal), /tmp/inv.png (invoices), /tmp/pt.png (patient). Demo credentials in /app/memory/test_credentials.md.",
+  "rca_of_issue": "N/A — no bugs found."
+}

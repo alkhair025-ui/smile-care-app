@@ -15,6 +15,8 @@ import jwt
 import bcrypt
 import httpx
 import requests
+from io import BytesIO
+from PIL import Image, ImageOps
 from bson import ObjectId
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request, status, UploadFile, File
 from fastapi.concurrency import run_in_threadpool
@@ -255,6 +257,25 @@ def _put_object(path: str, data: bytes, content_type: str) -> dict:
     )
     resp.raise_for_status()
     return resp.json()
+
+def _compress_image(data: bytes, max_dim: int = 1600, quality: int = 60) -> Optional[bytes]:
+    """Downscale (longest side <= max_dim) and JPEG-encode to reduce storage size
+    while preserving diagnostic detail. Returns None if not a decodable image."""
+    try:
+        img = Image.open(BytesIO(data))
+        img = ImageOps.exif_transpose(img)  # honor orientation
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        w, h = img.size
+        longest = max(w, h)
+        if longest > max_dim:
+            scale = max_dim / float(longest)
+            img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
+        out = BytesIO()
+        img.save(out, format="JPEG", quality=quality, optimize=True)
+        return out.getvalue()
+    except Exception:
+        return None
 
 def _get_object(path: str):
     global _storage_key
@@ -514,6 +535,7 @@ async def list_patients(user: dict = Depends(get_current_user), q: str = ""):
 @api_router.post("/patients")
 async def create_patient(data: PatientIn, user: dict = Depends(get_current_user)):
     doc = {"id": str(uuid.uuid4()), "tenant_id": user["tenant_id"],
+           "portal_token": secrets.token_urlsafe(9),
            "created_at": datetime.now(timezone.utc).isoformat(), **data.dict()}
     await db.patients.insert_one(doc.copy())
     return _clean(doc)
@@ -525,9 +547,26 @@ async def get_patient(pid: str, user: dict = Depends(get_current_user)):
         raise HTTPException(404, "المريض غير موجود")
     return _clean(p)
 
+@api_router.get("/patients/{pid}/portal")
+async def get_patient_portal(pid: str, user: dict = Depends(get_current_user)):
+    """Return (or lazily create) the public portal token + link for a patient."""
+    p = await db.patients.find_one({"id": pid, "tenant_id": user["tenant_id"]})
+    if not p:
+        raise HTTPException(404, "المريض غير موجود")
+    token = p.get("portal_token")
+    if not token:
+        token = secrets.token_urlsafe(9)
+        await db.patients.update_one({"id": pid, "tenant_id": user["tenant_id"]}, {"$set": {"portal_token": token}})
+    base = FRONTEND_URL or ""
+    return {"token": token, "url": f"{base}/p/{token}"}
+
 @api_router.patch("/patients/{pid}")
-async def update_patient(pid: str, data: PatientIn, user: dict = Depends(get_current_user)):
-    await db.patients.update_one({"id": pid, "tenant_id": user["tenant_id"]}, {"$set": data.dict()})
+async def update_patient(pid: str, data: dict, user: dict = Depends(get_current_user)):
+    allowed = {"full_name", "phone", "email", "date_of_birth", "gender", "address",
+               "medical_history", "allergies", "medications", "notes", "doctor_notes"}
+    update = {k: v for k, v in (data or {}).items() if k in allowed}
+    if update:
+        await db.patients.update_one({"id": pid, "tenant_id": user["tenant_id"]}, {"$set": update})
     p = await db.patients.find_one({"id": pid, "tenant_id": user["tenant_id"]})
     if not p:
         raise HTTPException(404)
@@ -565,9 +604,21 @@ async def upload_xray(pid: str, file: UploadFile = File(...), user: dict = Depen
     if not p:
         raise HTTPException(404, "المريض غير موجود")
     contents = await file.read()
-    ext = (file.filename or "img.jpg").rsplit(".", 1)[-1].lower() or "jpg"
-    obj_path = f"{APP_NAME}/uploads/{user['tenant_id']}/{uuid.uuid4()}.{ext}"
+    if not contents:
+        raise HTTPException(400, "الملف فارغ")
     ct = file.content_type or "image/jpeg"
+    original_size = len(contents)
+    # Server-side compression safety-net: downscale + JPEG-encode to save storage.
+    if ct.startswith("image/"):
+        try:
+            compressed = _compress_image(contents)
+            if compressed and len(compressed) < original_size:
+                contents = compressed
+                ct = "image/jpeg"
+        except Exception as e:
+            logger.warning(f"image compress skipped: {e}")
+    ext = "jpg" if ct == "image/jpeg" else ((file.filename or "img.jpg").rsplit(".", 1)[-1].lower() or "jpg")
+    obj_path = f"{APP_NAME}/uploads/{user['tenant_id']}/{uuid.uuid4()}.{ext}"
     try:
         await run_in_threadpool(_put_object, obj_path, contents, ct)
     except Exception as e:
@@ -580,6 +631,7 @@ async def upload_xray(pid: str, file: UploadFile = File(...), user: dict = Depen
         "filename": file.filename or "xray.jpg",
         "content_type": ct,
         "size": len(contents),
+        "original_size": original_size,
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.xrays.insert_one(doc.copy())
@@ -745,6 +797,43 @@ WORK_START_HOUR = 9
 WORK_END_HOUR = 17
 SLOT_MINUTES = 30
 
+@api_router.get("/public/patient/{token}")
+async def public_patient_portal(token: str):
+    """Auto-updating read-only patient portal: medical report, dental chart, invoices/payments."""
+    p = await db.patients.find_one({"portal_token": token})
+    if not p:
+        raise HTTPException(404, "الرابط غير صالح")
+    tenant = await db.tenants.find_one({"tenant_id": p["tenant_id"]}) or {}
+    charts = await db.tooth_charts.find({"patient_id": p["id"], "tenant_id": p["tenant_id"]}).to_list(200)
+    invoices = await db.invoices.find({"patient_id": p["id"], "tenant_id": p["tenant_id"], "kind": "patient"}).sort("date", -1).to_list(500)
+    total_billed = sum(i.get("total", 0) for i in invoices)
+    total_paid = sum(i.get("paid", 0) for i in invoices)
+    return {
+        "clinic": {
+            "name": tenant.get("clinic_name", "العيادة"),
+            "phone": tenant.get("clinic_phone", ""),
+            "address": tenant.get("clinic_address", ""),
+        },
+        "patient": {
+            "full_name": p.get("full_name", ""),
+            "medical_history": p.get("medical_history", ""),
+            "allergies": p.get("allergies", ""),
+            "medications": p.get("medications", ""),
+            "doctor_notes": p.get("doctor_notes", ""),
+        },
+        "chart": [{"tooth": c["tooth"], "condition": c["condition"], "note": c.get("note", "")} for c in charts],
+        "invoices": [{
+            "id": i["id"], "date": i.get("date", ""), "items": i.get("items", []),
+            "total": i.get("total", 0), "paid": i.get("paid", 0),
+            "currency": i.get("currency", "SYP"),
+        } for i in invoices],
+        "financials": {
+            "total_billed": total_billed,
+            "total_paid": total_paid,
+            "remaining": total_billed - total_paid,
+        },
+    }
+
 @api_router.get("/public/clinic/{tenant_id}")
 async def public_clinic(tenant_id: str):
     t = await db.tenants.find_one({"tenant_id": tenant_id})
@@ -807,7 +896,8 @@ async def public_book(tenant_id: str, data: PublicBookingIn):
             "id": pid, "tenant_id": tenant_id, "full_name": data.full_name, "phone": data.phone,
             "email": "", "date_of_birth": "", "gender": "", "address": "",
             "medical_history": "", "allergies": "", "medications": "", "notes": "طلب حجز عبر الموقع",
-            "doctor_notes": "", "created_at": datetime.now(timezone.utc).isoformat(),
+            "doctor_notes": "", "portal_token": secrets.token_urlsafe(9),
+            "created_at": datetime.now(timezone.utc).isoformat(),
         }
         await db.patients.insert_one(patient.copy())
     appt = {

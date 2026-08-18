@@ -1,0 +1,50 @@
+{
+  "summary": "Iteration 5 FULL verification for Eayadati (Phase 2 per-patient billing + Phase 3 auto-updating public patient portal). BACKEND: 13/13 pytest PASS in /app/backend/tests/test_iteration5.py — GET /api/patients/{id}/portal returns {token,url}, lazily creates on missing, and 2nd call returns SAME token; requires auth (401/403 without); 404 on unknown pid; GET /api/public/patient/{token} is unauthenticated, returns {clinic{name,phone,address}, patient{full_name,medical_history,allergies,medications,doctor_notes}, chart[{tooth,condition,note}], invoices[patient-kind only], financials{total_billed,total_paid,remaining}} — invalid token → 404; financials computed correctly (created invoice 50000/paid 20000 → remaining 30000); POST /api/patients auto-injects portal_token; public /book/{tenant_id} creates patient with portal_token; regressions all pass (SYP/USD persist, assistant 403 on /api/invoices when show_financials_to_assistants=false, chart persistence via GET /patients/{id}/chart, partial PATCH preserves untouched fields). FRONTEND (Expo web, 390x844, RTL): (a) /p/18Q8GbK7BzfJ renders WITHOUT any auth — clinic header + patient name + financial tiles (إجمالي/المدفوع/المتبقي) + سجل الفواتير + التقرير الطبي rows + مخطط الأسنان with all 32 FDI teeth + legend, /p/INVALID_XYZ shows 'الرابط غير صالح أو منتهي الصلاحية' error UI. (b) Patient page → 'إدارة الفواتير والحالة المالية' navigates to /patient/billing/{id}; billing FAB (data-testid='billing-add') opens 'فاتورة جديدة' modal with testIDs billing-treatment/cost/paid/date/cur-SYP/cur-USD/save + auto-computed 'المتبقي 0 ل.س'; page has 'إرسال رابط المريض عبر واتساب' button (billing-share-portal). (c) WhatsApp share from patient page opened https://wa.me/963900000002?text=...https%3A%2F%2Fsmile-care-96.preview.emergentagent.com%2Fp%2F18Q8GbK7BzfJ — full portal URL embedded. (d) Invoices tab per-invoice 'واتساب' (data-testid='wa-share-{id}') now sends portal link too (opened wa.me/962791111111?text=...%2Fp%2FzmunpOYr00JM, correctly percent-encoded). (e) AuthGate correctly allows 'p' path prefix — no redirect to /login on portal route. Non-blocking carryovers: 'shadow*' & 'pointerEvents' RN-Web deprecation warnings and static asset 404s (Metro dev preview) — all cosmetic, from prior iterations.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "StyleSheet shadow.*", "issue": "RN-Web deprecation warning: '\"shadow*\" style props are deprecated. Use \"boxShadow\"' — carried over from iter 1-4; no functional impact."},
+      {"component": "pointerEvents JSX prop", "issue": "RN-Web deprecation warning: 'props.pointerEvents is deprecated. Use style.pointerEvents' — carried over."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration5.py",
+    "/app/backend/tests/test_iteration4.py",
+    "/app/backend/tests/test_iteration3.py",
+    "/app/backend/tests/test_iteration2.py",
+    "/app/backend/tests/test_eayadati.py",
+    "/app/test_reports/pytest/pytest_iteration5.xml"
+  ],
+  "action_items": [
+    "(Optional/carry-over) Migrate `shadow*` -> `boxShadow` and JSX `pointerEvents` prop -> `style.pointerEvents` on web.",
+    "(Optional/carry-over) server.py is now ~1145 lines — consider splitting into modules (auth, patients+chart+portal, invoices, storage, public, reports, admin).",
+    "(Optional) Add data-testid to top-level 'الحالة المالية' summary cards on billing page for easier automated regression."
+  ],
+  "critical_code_review_comments": [
+    "server.py:529 GET /patients/{pid}/portal correctly performs lazy token generation via secrets.token_urlsafe(9) then $set-persist; second call reads existing token — idempotent as advertised.",
+    "server.py:766 public_patient_portal is defined WITHOUT Depends(get_current_user) and computes financials as sum(total)/sum(paid)/diff on patient-kind invoices only — matches spec. Correctly restricted to `kind=='patient'` so business expenses are not leaked.",
+    "server.py:515 create_patient injects portal_token at creation; server.py:865 public_book also injects portal_token on newly-created booking patients — both paths verified via tests.",
+    "frontend/src/portal-share.ts uses proper phone sanitization (/[^\\d]/g) and falls back to wa.me/?text= when no phone — safe; graceful degradation.",
+    "frontend/app/_layout.tsx:31 AuthGate allowlist `segments[0] === 'book' || segments[0] === 'p'` correctly exposes /p/[token] as public; verified in browser (no login redirect).",
+    "frontend/app/p/[token].tsx keeps rendering purely from `api.publicPatientPortal(token)` response; error path sets notFound=true — proper loading/error/success states.",
+    "frontend/app/patient/billing/[id].tsx: FAB testID='billing-add' opens invoice modal reusing invoices CRUD (kind=patient, patient_id set) — no new backend endpoint required.",
+    "(Nit) server.py currency default is SYP and invoice model preserves USD — regression covered."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration5.py (new)",
+    "/app/test_reports/pytest/pytest_iteration5.xml (generated)",
+    "/app/test_reports/iteration_5.json (new)"
+  ],
+  "success_rate": {"backend": "100% (13/13 iter5 suite)", "frontend": "100% of the targeted flows (public portal, billing nav, add-invoice modal, WhatsApp share on patient page + invoices tab)"},
+  "seed_data_creation": "Test patients TEST_Iter5_* created and deleted per test; test patient TEST_Iter5_Book_* created via public booking then deleted; test invoices created and deleted; assistant setting reset. Working portal token 18Q8GbK7BzfJ (unchanged from context) still valid — no demo data destroyed.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend: use POST /api/auth/login → response.access_token (NOT 'token'). Tenant id lives in JWT payload (base64-url decode of the middle segment → 'tenant_id'); /api/me does NOT exist (404). Booking clash rule (409): use randomized future date+time to avoid re-run conflicts. Public portal endpoint is GET /api/public/patient/{token}, no auth, returns dict with keys clinic|patient|chart|invoices|financials. Portal auth endpoint is GET /api/patients/{id}/portal (idempotent). Frontend AuthGate allowlist: segments[0] in {'book','p'}. Key testIDs — login: login-email/login-password/login-submit-button; patient rows: patient-row-{id}; billing page: billing-add (FAB), billing-share-portal, billing-treatment, billing-cost, billing-paid, billing-date, billing-cur-SYP, billing-cur-USD, billing-save; invoices tab per-row: wa-share-{invoice_id}. WhatsApp share deep link format: https://wa.me/{digits}?text=<url-encoded message ending with .../p/{token}>. LocalStorage keys: eayadati_token, eayadati_user (NOT 'auth_token').",
+  "rca_of_issue": "N/A — this is a feature-verification iteration, all 9 requested flows verified working. No bugs found."
+}
