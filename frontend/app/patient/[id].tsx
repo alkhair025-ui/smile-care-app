@@ -4,12 +4,14 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { Image } from 'expo-image';
 import { colors, spacing, radius, font, fontFamily, shadow, toothColors, toothLabels } from '@/src/theme';
 import { api } from '@/src/api';
-import { exportInvoicePdf, shareInvoiceViaWhatsApp } from '@/src/invoice-pdf';
+import { exportInvoicePdf } from '@/src/invoice-pdf';
+import { sharePortalViaWhatsApp } from '@/src/portal-share';
 
 const UP_RIGHT = [18, 17, 16, 15, 14, 13, 12, 11];
 const UP_LEFT = [21, 22, 23, 24, 25, 26, 27, 28];
@@ -29,6 +31,7 @@ export default function PatientDetail() {
   const [selectedTooth, setSelectedTooth] = useState<number | null>(null);
   const [uploading, setUploading] = useState(false);
   const [xrayUrls, setXrayUrls] = useState<Record<string, string>>({});
+  const [xrayError, setXrayError] = useState('');
   const [notes, setNotes] = useState('');
   const [savingNotes, setSavingNotes] = useState(false);
   const [sharingId, setSharingId] = useState<string | null>(null);
@@ -48,6 +51,9 @@ export default function PatientDetail() {
       setXrayUrls(urls);
       try { const inv = await api.listInvoices('patient'); setInvoices(inv.filter((i: any) => i.patient_id === id)); } catch { setInvoices([]); }
       try { setClinic(await api.getSettings()); } catch { /* noop */ }
+    } catch (e: any) {
+      // Auth/network errors are handled by the global AuthGate redirect; avoid crashing the screen.
+      console.warn('patient load error', e?.message);
     } finally { setLoading(false); }
   }, [id]);
 
@@ -55,40 +61,75 @@ export default function PatientDetail() {
 
   const setCondition = async (cond: string) => {
     if (selectedTooth == null) return;
-    const updated = await api.setTooth(id!, { tooth: selectedTooth, condition: cond, note: '' });
-    setChart((c) => ({ ...c, [selectedTooth]: updated }));
+    const tooth = selectedTooth;
     setSelectedTooth(null);
+    try {
+      const updated = await api.setTooth(id!, { tooth, condition: cond, note: chart[tooth]?.note || '' });
+      setChart((c) => ({ ...c, [tooth]: updated }));
+    } catch (e: any) {
+      console.warn('setTooth error', e?.message);
+    }
   };
 
   const saveNotes = async () => {
     setSavingNotes(true);
-    try { await api.updatePatient(id!, { ...patient, doctor_notes: notes }); setPatient((p: any) => ({ ...p, doctor_notes: notes })); }
+    try { await api.updatePatient(id!, { doctor_notes: notes }); setPatient((p: any) => ({ ...p, doctor_notes: notes })); }
+    catch (e: any) { console.warn('saveNotes error', e?.message); }
     finally { setSavingNotes(false); }
   };
 
   const pickXray = async () => {
-    const perm = await ImagePicker.getMediaLibraryPermissionsAsync();
-    let status = perm.status;
-    if (status !== 'granted' && perm.canAskAgain) {
-      status = (await ImagePicker.requestMediaLibraryPermissionsAsync()).status;
+    setXrayError('');
+    if (Platform.OS !== 'web') {
+      const perm = await ImagePicker.getMediaLibraryPermissionsAsync();
+      let status = perm.status;
+      if (status !== 'granted' && perm.canAskAgain) {
+        status = (await ImagePicker.requestMediaLibraryPermissionsAsync()).status;
+      }
+      if (status !== 'granted') {
+        setXrayError('يلزم إذن الوصول للصور. افتح الإعدادات لتفعيله.');
+        Linking.openSettings();
+        return;
+      }
     }
-    if (status !== 'granted' && Platform.OS !== 'web') { Linking.openSettings(); return; }
-    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.85 });
+    let res;
+    try {
+      res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 1 });
+    } catch {
+      setXrayError('تعذّر فتح معرض الصور.');
+      return;
+    }
     if (res.canceled || !res.assets?.length) return;
     const asset = res.assets[0];
     setUploading(true);
     try {
-      const uploaded = await api.uploadXray(id!, asset.uri, asset.fileName || 'xray.jpg', asset.mimeType || 'image/jpeg');
+      // Compress + resize before upload to save server space while keeping medical detail.
+      let uploadUri = asset.uri;
+      let name = (asset.fileName || 'xray.jpg').replace(/\.[^.]+$/, '') + '.jpg';
+      try {
+        const manipulated = await ImageManipulator.manipulateAsync(
+          asset.uri,
+          [{ resize: { width: 1600 } }],
+          { compress: 0.6, format: ImageManipulator.SaveFormat.JPEG }
+        );
+        uploadUri = manipulated.uri;
+      } catch (mErr) {
+        console.warn('compress failed, using original', mErr);
+      }
+      const uploaded = await api.uploadXray(id!, uploadUri, name, 'image/jpeg');
       const url = await api.xrayFileUrl(uploaded.id);
       setXrays((xs) => [uploaded, ...xs]);
       setXrayUrls((u) => ({ ...u, [uploaded.id]: url }));
-    } catch (e: any) { console.warn('xray', e.message); } finally { setUploading(false); }
+    } catch (e: any) {
+      setXrayError('فشل رفع الصورة، تأكد من الاتصال وحاول مجدداً.');
+      console.warn('xray', e?.message);
+    } finally { setUploading(false); }
   };
 
   const exportPatientPdf = async () => {
     if (!patient) return;
     const chartRows = Object.values(chart).map((t: any) => `<tr><td>${t.tooth}</td><td>${toothLabels[t.condition] || t.condition}</td><td>${t.note || ''}</td></tr>`).join('');
-    const invRows = invoices.map((i: any) => `<tr><td>${(i.date || '').slice(0, 10)}</td><td>${(i.items || []).map((x: any) => x.description).join(', ')}</td><td>${i.total} د.أ</td></tr>`).join('');
+    const invRows = invoices.map((i: any) => `<tr><td>${(i.date || '').slice(0, 10)}</td><td>${(i.items || []).map((x: any) => x.description).join(', ')}</td><td>${i.total} ${i.currency === 'USD' ? '$' : 'ل.س'}</td></tr>`).join('');
     const html = `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><style>
       body{font-family:Tajawal, Arial, sans-serif; padding:32px; color:#1A211E;}
       h1{color:#4A7065; margin-bottom:4px;} .sub{color:#6B7876; margin-bottom:24px;}
@@ -122,9 +163,10 @@ export default function PatientDetail() {
   };
 
   const clinicInfo = { name: clinic.clinic_name, phone: clinic.clinic_phone, address: clinic.clinic_address };
-  const onShareInvoice = async (inv: any) => {
-    setSharingId(inv.id);
-    try { await shareInvoiceViaWhatsApp(inv, clinicInfo, patient?.phone); } finally { setSharingId(null); }
+  const onShareInvoice = async () => {
+    setSharingId('portal');
+    try { await sharePortalViaWhatsApp(id!, clinic.clinic_name, patient?.full_name, patient?.phone); }
+    catch (e: any) { console.warn('share portal', e?.message); } finally { setSharingId(null); }
   };
 
   if (loading || !patient) return (
@@ -199,6 +241,8 @@ export default function PatientDetail() {
           <Pressable testID="upload-xray-btn" onPress={pickXray} style={styles.uploadBtn}>
             {uploading ? <ActivityIndicator color="#fff" /> : (<><Feather name="upload" size={18} color="#fff" /><Text style={styles.uploadBtnText}>رفع صورة شعاعية</Text></>)}
           </Pressable>
+          <Text style={styles.uploadHint}>يتم ضغط الصورة تلقائياً قبل الحفظ لتوفير المساحة مع الحفاظ على وضوح التفاصيل.</Text>
+          {xrayError ? <Text testID="xray-error" style={styles.xrayErr}>{xrayError}</Text> : null}
           {xrays.length === 0 ? (
             <Text style={styles.emptyInline}>لا توجد صور شعاعية</Text>
           ) : (
@@ -212,24 +256,30 @@ export default function PatientDetail() {
 
         {/* Invoices */}
         <SectionCard icon="file-text" title="الفواتير">
+          <View style={styles.invActionsTop}>
+            <Pressable testID="open-billing-btn" onPress={() => router.push({ pathname: '/patient/billing/[id]', params: { id: id! } })} style={styles.manageBtn}>
+              <Feather name="dollar-sign" size={16} color="#fff" />
+              <Text style={styles.manageBtnText}>إدارة الفواتير والحالة المالية</Text>
+            </Pressable>
+            <Pressable testID="share-portal-btn" onPress={onShareInvoice} disabled={sharingId === 'portal'} style={styles.portalShareBtn}>
+              {sharingId === 'portal' ? <ActivityIndicator color="#fff" size="small" /> : (<><Feather name="share-2" size={16} color="#fff" /><Text style={styles.manageBtnText}>إرسال رابط المريض عبر واتساب</Text></>)}
+            </Pressable>
+          </View>
           {invoices.length === 0 ? (
             <Text style={styles.emptyInline}>لا توجد فواتير للمريض</Text>
           ) : invoices.map((i: any) => (
             <View key={i.id} style={styles.invCard}>
               <View style={{ flexDirection: 'row-reverse', justifyContent: 'space-between' }}>
                 <Text style={styles.infoVal}>{(i.date || '').slice(0, 10)}</Text>
-                <Text style={[styles.infoVal, { color: colors.brand, fontFamily: fontFamily.bold }]}>{i.total} د.أ</Text>
+                <Text style={[styles.infoVal, { color: colors.brand, fontFamily: fontFamily.bold }]}>{i.total} {i.currency === 'USD' ? '$' : 'ل.س'}</Text>
               </View>
               {(i.items || []).map((it: any, idx: number) => (
                 <Text key={idx} style={styles.infoLabel}>• {it.description} ({it.quantity} × {it.unit_price})</Text>
               ))}
               <View style={styles.invActions}>
                 <Pressable testID={`inv-pdf-${i.id}`} onPress={() => exportInvoicePdf(i, clinicInfo)} style={styles.pdfBtn}>
-                  <Feather name="download" size={14} color={colors.brand} />
-                  <Text style={styles.pdfBtnText}>تصدير PDF</Text>
-                </Pressable>
-                <Pressable testID={`inv-wa-${i.id}`} onPress={() => onShareInvoice(i)} disabled={sharingId === i.id} style={styles.waBtnSm}>
-                  {sharingId === i.id ? <ActivityIndicator color="#fff" size="small" /> : (<><Feather name="share-2" size={14} color="#fff" /><Text style={styles.waBtnSmText}>واتساب</Text></>)}
+                  <Feather name="printer" size={14} color={colors.brand} />
+                  <Text style={styles.pdfBtnText}>طباعة / PDF</Text>
                 </Pressable>
               </View>
             </View>
@@ -305,11 +355,17 @@ const styles = StyleSheet.create({
   legendText: { fontSize: 11, color: colors.onSurfaceSecondary, fontFamily: fontFamily.regular },
   uploadBtn: { flexDirection: 'row-reverse', gap: spacing.sm, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.brand, paddingVertical: 14, borderRadius: radius.md, marginBottom: spacing.md },
   uploadBtnText: { color: '#fff', fontFamily: fontFamily.bold },
+  uploadHint: { color: colors.muted, fontFamily: fontFamily.regular, fontSize: font.sm, textAlign: 'right', writingDirection: 'rtl', marginBottom: spacing.sm },
+  xrayErr: { color: colors.error, backgroundColor: colors.errorBg, padding: spacing.md, borderRadius: radius.md, marginBottom: spacing.sm, fontFamily: fontFamily.regular, textAlign: 'right', writingDirection: 'rtl' },
   emptyInline: { color: colors.muted, fontFamily: fontFamily.regular, textAlign: 'center', paddingVertical: spacing.md },
   gallery: { flexDirection: 'row-reverse', flexWrap: 'wrap', gap: spacing.sm },
   thumb: { width: '48%', aspectRatio: 1, borderRadius: radius.md, overflow: 'hidden', backgroundColor: colors.surfaceTertiary },
   thumbImg: { width: '100%', height: '100%' },
   invCard: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.sm },
+  invActionsTop: { gap: spacing.sm, marginBottom: spacing.md },
+  manageBtn: { flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: spacing.sm, backgroundColor: colors.brand, paddingVertical: spacing.md, borderRadius: radius.md },
+  manageBtnText: { color: '#fff', fontFamily: fontFamily.bold, fontSize: font.base },
+  portalShareBtn: { flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: spacing.sm, backgroundColor: colors.success, paddingVertical: spacing.md, borderRadius: radius.md },
   invActions: { flexDirection: 'row-reverse', gap: spacing.sm, marginTop: spacing.md },
   pdfBtn: { flexDirection: 'row-reverse', alignItems: 'center', gap: 6, backgroundColor: colors.brandTertiary, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.md },
   pdfBtnText: { color: colors.brand, fontFamily: fontFamily.bold, fontSize: font.sm },

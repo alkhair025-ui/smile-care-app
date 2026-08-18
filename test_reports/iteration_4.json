@@ -1,0 +1,47 @@
+{
+  "summary": "Iteration 4 BUG FIX verification for Eayadati. All 4 reported bugs are FIXED and pass end-to-end. Backend: 16/16 tests PASS in /app/backend/tests/test_iteration4.py. Frontend (Expo web, 390x844 RTL, doctor@demo.com): logged in → opened patient 'bae77482...' → tooth-13 bg was white (rgb(255,255,255)) → tapped tooth → picked cond-caries → bg became rgb(168,74,66) → RELOADED page → tooth-13 bg still rgb(168,74,66) = CHART PERSISTS ACROSS RELOAD. No uncaught error overlay after reload/edit. Settings screen renders OpenStreetMap iframe (title='clinic-map', src=openstreetmap.org/export/embed.html?bbox=...) and 'استخدام موقعي الحالي (GPS)' button visible + 'فتح في خرائط جوجل' link. Backend regressions verified: partial PATCH /patients/{id} preserves full_name/medical_history/allergies/phone when only doctor_notes is sent; unknown fields (tenant_id, id) are ignored; public booking /api/public/clinic/{tenant_id}, /slots (returns [{time,available}]), /book (200) work without auth; disabled user login now returns 403 with message 'تم تعطيل هذا الحساب...' (previously 200); invoice default SYP + create/GET USD persistence; RBAC financials 403 for assistant when show_financials_to_assistants=false. Non-blocking: RN-Web deprecation warnings for shadow* and pointerEvents persist from earlier iterations, plus Expo Router prints 'Route /[id] with param id was specified both in the path and as a param' warning (cosmetic). Static asset 404s during Metro dev preview are typical and harmless.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "StyleSheet shadow.*", "issue": "RN-Web deprecation warning: '\"shadow*\" style props are deprecated. Use \"boxShadow\"'. Carried over from iter 1/2/3, no functional impact."},
+      {"component": "pointerEvents JSX prop", "issue": "RN-Web deprecation warning: 'props.pointerEvents is deprecated. Use style.pointerEvents'. Carried over."},
+      {"component": "expo-router patient/[id].tsx", "issue": "Console warning 'Route /[id] with param id was specified both in the path and as a param, removing from path' — caller likely passes {id} as both path segment and query. Cosmetic; navigation still works. Reference: /app/frontend/app/patient/[id].tsx (caller side)."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration4.py",
+    "/app/backend/tests/test_iteration3.py",
+    "/app/backend/tests/test_iteration2.py",
+    "/app/backend/tests/test_eayadati.py",
+    "/app/test_reports/pytest/pytest_iteration4.xml"
+  ],
+  "action_items": [
+    "(Optional) Silence expo-router warning by stopping duplicate id passing on push. Grep for router.push('/patient/'+id, { id }) style calls and drop the params object.",
+    "(Optional/carry-over) Migrate `shadow*` -> `boxShadow` and JSX `pointerEvents` prop -> `style.pointerEvents` on web.",
+    "(Optional/carry-over) server.py still ~1092 lines — split into modules (auth, admin, patients+chart, invoices, storage, public, reports)."
+  ],
+  "critical_code_review_comments": [
+    "server.py:528 update_patient now correctly implements a whitelist-partial PATCH: `allowed = {full_name, phone, email, date_of_birth, gender, address, medical_history, allergies, medications, notes, doctor_notes}` and only $set-fields present in the payload. This is the correct fix for BUG 2.",
+    "server.py:553 set_tooth uses upsert on (patient_id, tenant_id, tooth) — guarantees idempotency and no duplicates. Verified via test_set_same_tooth_twice_updates_no_duplicate.",
+    "server.py:445 login() now enforces `if user.get('disabled'): raise HTTPException(403, ...)` — consistent with get_current_user's disabled check.",
+    "frontend/patient/[id].tsx load() is wrapped in try/catch and setCondition/saveNotes are individually guarded — patient screen can no longer crash on transient API errors.",
+    "frontend/src/components/MapView.web.tsx uses an OpenStreetMap iframe embed on web (react-native-webview is native-only) — clean platform split via .web.tsx.",
+    "public_slots returns [{time, available}] not [string] — matches frontend `/book/{tenant_id}` consumer; documented in iteration_4 tests."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration4.py (new)",
+    "/app/test_reports/pytest/pytest_iteration4.xml (generated)"
+  ],
+  "success_rate": {"backend": "100% (16/16 in iter4 suite)", "frontend": "100% of the 4 targeted bug flows"},
+  "seed_data_creation": "Test patient TEST_Iter4_Patient created and deleted per test; test invoices TEST_Iter4_SYP/USD created and cleaned up; disabled-toggle test always re-enables assistant in finally block. Demo credentials unchanged.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend base: https://smile-care-96.preview.emergentagent.com/api. Run iter4 with `EXPO_PUBLIC_BACKEND_URL=<url> pytest backend/tests/test_iteration4.py -v -n0`. Public slots endpoint returns [{time:'HH:MM',available:bool}] objects, NOT string list — assert accordingly. Login disabled contract is 403 (not 401). testIDs used: login-email/password/submit-button, patient-row-{id}, tooth-{n} (11-48 FDI), cond-{healthy|caries|filling|crown|rct|extracted|implant|missing}, doctor-notes-input, save-notes-btn, and settings screen iframe[title='clinic-map']. Frontend tooth color check: after setting caries, computed backgroundColor should be rgb(168,74,66); healthy is rgb(255,255,255).",
+  "rca_of_issue": "All 4 user-reported bugs have documented root causes and fixes (see critical_code_review_comments). BUG 1 (chart 'not saving' feel) — was actually the load() throw silently blanking chart state; now try/catch + guarded setCondition. BUG 2 (patient fields wiped) — PATCH used to serialize a full PatientIn model, so unspecified fields became None on write; fixed by whitelist-partial dict. BUG 3 (patient page crash) — same load() unhandled promise rejection produced a red overlay on web; try/catch fixed it. BUG 4 (map blank / GPS) — react-native-webview has no web implementation, so <MapView/> rendered as null; fixed by adding MapView.web.tsx that embeds OpenStreetMap via iframe."
+}

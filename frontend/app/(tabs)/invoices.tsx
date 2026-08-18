@@ -6,7 +6,8 @@ import { useFocusEffect } from 'expo-router';
 import { colors, spacing, radius, font, fontFamily, shadow } from '@/src/theme';
 import { api } from '@/src/api';
 import { useAuth } from '@/src/auth-context';
-import { exportInvoicePdf, shareInvoiceViaWhatsApp } from '@/src/invoice-pdf';
+import { exportInvoicePdf } from '@/src/invoice-pdf';
+import { sharePortalViaWhatsApp } from '@/src/portal-share';
 
 const KIND_LABELS: Record<string, string> = { patient: 'المرضى', purchase: 'المشتريات', expense: 'المصاريف', salary: 'الرواتب' };
 const KIND_COLORS: Record<string, string> = { patient: '#3A6F54', purchase: '#B58548', expense: '#A84A42', salary: '#4A5854' };
@@ -61,7 +62,7 @@ export default function Invoices() {
   }, [filtered]);
 
   const clinicInfo = { name: clinic.clinic_name, phone: clinic.clinic_phone, address: clinic.clinic_address };
-  const onShare = async (inv: any) => { setBusyId(inv.id); try { await shareInvoiceViaWhatsApp(inv, clinicInfo, patientPhones[inv.patient_id]); } finally { setBusyId(null); } };
+  const onShare = async (inv: any) => { setBusyId(inv.id); try { await sharePortalViaWhatsApp(inv.patient_id, clinicInfo.name || '', inv.party_name, patientPhones[inv.patient_id]); } catch (e: any) { console.warn('share', e?.message); } finally { setBusyId(null); } };
   const onDelete = async (inv: any) => { setMenuInv(null); await api.deleteInvoice(inv.id); load(); };
 
   if (denied) return (

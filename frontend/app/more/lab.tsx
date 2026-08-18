@@ -48,7 +48,7 @@ export default function LabScreen() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.name}>{item.patient_name} · {item.lab_name}</Text>
                 <Text style={styles.meta}>{item.description}</Text>
-                <Text style={styles.meta}>الكلفة: {item.cost} د.أ | المدفوع: {item.paid} د.أ</Text>
+                <Text style={styles.meta}>الكلفة: {item.cost} ل.س | المدفوع: {item.paid} ل.س</Text>
                 <View style={{ flexDirection: 'row-reverse', gap: 4, marginTop: 4 }}>
                   {['sent', 'received', 'delivered'].map((s) => (
                     <Pressable key={s} testID={`lab-${s}-${item.id}`} onPress={() => setStatus(item, s)} style={[styles.chip, { borderColor: item.status === s ? STATUS_COLORS[s] : colors.border, backgroundColor: item.status === s ? STATUS_COLORS[s] + '18' : 'transparent' }]}>

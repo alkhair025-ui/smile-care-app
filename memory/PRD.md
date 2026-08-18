@@ -1,71 +1,33 @@
 # PRD — عيادتي (Eayadati) · Dental Clinic Management
 
 ## Problem Statement
-تطبيق ويب/موبايل متكامل لإدارة عيادات الأسنان (Multi-tenant SaaS)، تصميم عصري هادئ (Sage/Slate)، عربي RTL. مزايا: تسجيل دخول آمن بصلاحيات مرنة، EHR، مخطط أسنان FDI، أرشيف أشعة، تصدير PDF، فوترة شاملة، مشاركة واتساب، مواعيد، مستودع بتنبيهات، مخابر، تقارير أرباح.
+تطبيق ويب/موبايل متكامل لإدارة عيادات الأسنان (Multi-tenant SaaS)، تصميم عصري هادئ (Sage/Slate)، عربي RTL.
 
 ## Architecture
-- **Backend**: FastAPI + MongoDB (motor), JWT auth (bcrypt), multi-tenant isolation via JWT `tenant_id`. Emergent Object Storage for X-rays. Routes under `/api`.
-- **Frontend**: Expo Router (RTL Arabic, Tajawal via expo-font). Bottom tabs + stacks. Auth context with SecureStore/localStorage.
-- **Design**: `/app/design_guidelines.json` — Sage green (#4A7065) / Slate palette.
+- Backend: FastAPI + MongoDB (motor), JWT auth (bcrypt), multi-tenant via JWT tenant_id. Emergent Object Storage for X-rays (server-side Pillow compression). Emergent Resend email. Routes under /api.
+- Frontend: Expo Router (RTL, Tajawal font). Bottom tabs + stacks + public routes (book, p). MapView platform-split (WebView native / iframe web).
 
-## User Personas
-1. **الطبيب (Doctor)** — tenant owner, full access, manages assistants + financial visibility.
-2. **المساعد (Assistant)** — sub-user, restricted from financials by default.
+## Personas
+1. المدير العام (super_admin) — owner, manages all doctor/assistant accounts.
+2. الطبيب (doctor) — tenant owner, full access.
+3. المساعد (assistant) — restricted from financials by default.
+4. المريض (patient) — public booking + read-only portal (no login).
 
-## Core Requirements (static)
-- Multi-tenant secure auth · flexible financial permissions
-- EHR (history/allergies/meds) · FDI dental chart · X-ray archive · PDF export
-- Invoicing (patients/purchases/expenses/salaries) · WhatsApp share
-- Appointments calendar · Inventory + low-stock alerts · Lab orders
-- Profit reports with charts · Clinic location on map
+## Implemented (through 2026-08-18)
+- Auth: JWT login/register, forgot/reset password (email), super admin dashboard, disabled-login block
+- Patients CRUD + search, EHR, doctor_notes; PARTIAL patch (no data loss)
+- Interactive FDI dental chart (persists), X-ray upload with auto compression (client + server Pillow)
+- Per-patient billing management page (treatment/cost/paid/remaining/date, SYP/USD)
+- Invoices (4 kinds) with search + date filter, currency SYP/USD, edit/delete
+- Public auto-updating patient portal /p/{token} (financials + medical report + chart) — replaces stored PDFs
+- Smart WhatsApp: sends patient portal link; appointment confirm + tomorrow reminders
+- Public booking portal /book/{tenant} (slots, pending bookings)
+- Inventory (+low-stock), Lab orders, Dashboard (daily summary + charts)
+- Clinic location: GPS + interactive OpenStreetMap; share booking link
+- Backend tests: iterations 1-6 all passing
 
-## Implemented (2026-08-14)
-- ✅ JWT email/password auth, multi-tenant, doctor/assistant roles + assistant management
-- ✅ Role-based financial gating (toggle in settings) — verified 403/200
-- ✅ Patients CRUD + search, EHR fields
-- ✅ Interactive FDI dental chart (32 teeth, color-coded conditions, bottom sheet)
-- ✅ X-ray upload/gallery via Emergent Object Storage
-- ✅ PDF export (ختامي) via expo-print, WhatsApp share (deep-link)
-- ✅ Invoices (4 kinds) with WhatsApp sharing
-- ✅ Appointments with status chips
-- ✅ Inventory with low-stock warnings, Lab orders with status tracking
-- ✅ Dashboard: stats + financial summary + 6-month bar chart (SVG)
-- ✅ Settings: clinic info, map link, permission toggle
-- ✅ Full RTL Arabic UI, Tajawal font
-- ✅ Backend 37/37 tests pass
-
-## Implemented — Iteration 2 (2026-08-14)
-- ✅ Invoice edit (PATCH) + delete with kebab menu (delete doctor-only)
-- ✅ Inventory edit + delete
-- ✅ Invoice PDF → uploaded to Object Storage → public download link → shared via WhatsApp (per invoice)
-- ✅ Public patient booking portal `/book/{tenant_id}` (no login): day + available-slot picker → creates pending appointment; double-book protection (409)
-- ✅ "Booking new" pending badge on appointments; doctor confirms
-- ✅ Unified single patient page (info + doctor_notes editable + dental chart + x-rays + invoices with PDF/WhatsApp)
-- ✅ New `doctor_notes` field on patient
-- ✅ Clinic location via GPS (expo-location) + interactive OpenStreetMap (Leaflet in WebView) + share booking link
-- ✅ Backend 52/52 tests pass, multi-tenant, doctor/assistant roles + assistant management
-- ✅ Role-based financial gating (toggle in settings) — verified 403/200
-- ✅ Patients CRUD + search, EHR fields
-- ✅ Interactive FDI dental chart (32 teeth, color-coded conditions, bottom sheet)
-- ✅ X-ray upload/gallery via Emergent Object Storage
-- ✅ PDF export (ختامي) via expo-print, WhatsApp share (deep-link)
-- ✅ Invoices (4 kinds) with WhatsApp sharing
-- ✅ Appointments with status chips
-- ✅ Inventory with low-stock warnings, Lab orders with status tracking
-- ✅ Dashboard: stats + financial summary + 6-month bar chart (SVG)
-- ✅ Settings: clinic info, map link, permission toggle
-- ✅ Full RTL Arabic UI, Tajawal font
-- ✅ Backend 37/37 tests pass
-
-## Backlog (prioritized)
-- **P1**: AI assistant (medical consult + treatment plans) — deferred from MVP
-- **P1**: Automated appointment reminders (requires push notifications / native build)
-- **P1**: Patient self-booking portal
-- **P2**: Interactive map picker for clinic location (currently opens Google Maps)
-- **P2**: Email invoice sharing (Resend integration)
-- **P2**: Edit/delete for invoices & inventory from UI
-- **P2**: server.py module split (currently ~790 lines)
-
-## Next Tasks
-- AI assistant integration on user request
-- Reminder system after deploy/native build
+## Backlog (P1/P2)
+- AI assistant (treatment plans/consult) — deferred
+- Automated reminders (push/WhatsApp Business API) — needs native build
+- Multi-currency-aware profit reports (currently sums per currency)
+- server.py module split (~1180 lines); RN-Web shadow*/pointerEvents migration

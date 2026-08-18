@@ -83,6 +83,8 @@ export const api = {
 
   listPatients: (q = '') => request<any[]>(`/patients${q ? `?q=${encodeURIComponent(q)}` : ''}`),
   getPatient: (id: string) => request<any>(`/patients/${id}`),
+  getPatientPortal: (id: string) => request<{ token: string; url: string }>(`/patients/${id}/portal`),
+  publicPatientPortal: (token: string) => request<any>(`/public/patient/${token}`, { auth: false }),
   createPatient: (data: any) => request<any>('/patients', { method: 'POST', body: data }),
   updatePatient: (id: string, data: any) => request<any>(`/patients/${id}`, { method: 'PATCH', body: data }),
   deletePatient: (id: string) => request(`/patients/${id}`, { method: 'DELETE' }),

@@ -28,7 +28,7 @@ function AuthGate() {
   useEffect(() => {
     if (loading) return;
     const inAuthGroup = segments[0] === '(auth)';
-    const inPublicGroup = segments[0] === 'book';
+    const inPublicGroup = segments[0] === 'book' || segments[0] === 'p';
     const inAdminGroup = segments[0] === '(admin)';
     if (!user && !inAuthGroup && !inPublicGroup) {
       router.replace('/(auth)/login');

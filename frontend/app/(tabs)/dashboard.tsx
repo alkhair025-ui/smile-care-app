@@ -8,7 +8,7 @@ import { colors, spacing, radius, font, fontFamily, shadow } from '@/src/theme';
 import { useAuth } from '@/src/auth-context';
 import { api } from '@/src/api';
 
-const fmt = (n: number) => `${Math.round(n).toLocaleString('en')} د.أ`;
+const fmt = (n: number) => `${Math.round(n).toLocaleString('en')} ل.س`;
 
 function StatCard({ icon, label, value, color, testID }: any) {
   return (
