@@ -1,0 +1,38 @@
+{
+  "summary": "Iteration 8 (dependency migration to boto3 + smtplib) verified end-to-end. Backend suite /app/backend/tests/test_iteration8.py runs 38 tests + 1 intentional skip: ALL PASS. Confirmed: (1) App boots with new deps — no import errors in supervisor logs, /api/auth/me responds, uvicorn is stable. (2) X-ray upload works via local-fs fallback: PNG 2000x1500 uploaded → server compressed to JPEG (size < original_size), stored at path 'eayadati/uploads/{tenant}/*.jpg', GET /api/xrays/{id}/file?token=... returns 200 with image bytes, no-token returns 401, DELETE returns 200. (3) PDF public upload: POST /api/uploads/pdf returns {file_id, public_url, path}; GET /api/public/file/{id} serves 200 with %PDF header, no auth required. Note: public_url is relative when FRONTEND_URL base isn't propagated as absolute; the 'path' field is always usable — frontend concatenates it against EXPO_PUBLIC_BACKEND_URL. (4) Forgot-password with SMTP unconfigured: returns {ok:true} for both known and unknown emails (no 500), backend log shows 'SMTP not configured; skipping email send' as expected. Reset-password with invalid token returns 400. (5) Core flows regression clean: doctor/assistant/super_admin login, patient create/get/PATCH partial, dental chart POST/GET persistence, appointments create+list+delete, invoices create SYP+USD, filter by kind, PATCH edit (with full InvoiceIn), delete, inventory low-stock detection, lab orders CRUD, /api/reports/summary, public patient portal token flow (/api/public/patient/{token}), public clinic info + booking. (6) Super admin endpoints /api/admin/doctors and /api/admin/stats work; doctor role gets 403 on admin routes. (7) Frontend Playwright smoke at 390x844: login → dashboard renders (stat-patients, stat-appointments, stat-lowstock all present), low-stock modal opens, stat-patients navigates to /patients (9 patient rows), opening a patient shows the correct page WITHOUT export-pdf-btn and WITH share-portal-btn, invoices tab shows 0 inv-pdf-* buttons and 2 wa-share-* buttons (matches iter-7 removal). No red screens. Only console noise: pre-existing react-native-web deprecation warnings ('shadow*' style props, props.pointerEvents) and some 404s on static assets (favicon/icons — not blocking).",
+  "backend_issues": {"critical": [], "minor": [
+    {"endpoint": "POST /api/uploads/pdf", "issue": "Response.public_url is a RELATIVE path ('/api/public/file/{id}') when no absolute base is configured. Not a bug (path field is always relative and works), but frontend must join with EXPO_PUBLIC_BACKEND_URL. Consider always returning an absolute URL to reduce client-side coupling."}
+  ]},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "StyleSheet shadow.card", "issue": "react-native-web console warning: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' still emitted (pre-existing, non-blocking). Reference: /app/frontend/src/theme.ts"},
+      {"component": "props.pointerEvents", "issue": "react-native-web console warning: 'props.pointerEvents is deprecated. Use style.pointerEvents' (library-level, non-blocking)."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration8.py",
+    "/app/test_reports/pytest/pytest_iteration8.xml"
+  ],
+  "action_items": [
+    "Optional: migrate shadow.card entries in /app/frontend/src/theme.ts to boxShadow to silence recurring react-native-web deprecation warnings.",
+    "Optional: in /app/backend/server.py (~line 801) always return an absolute public_url (e.g. FRONTEND_URL from .env) instead of a bare relative path, so mobile clients don't need to know the API base to share PDF links via WhatsApp.",
+    "No functional issues from iteration-8 migration. Ready to ship for Railway."
+  ],
+  "critical_code_review_comments": [
+    "boto3/local fallback is cleanly gated by _use_s3() = bool(S3_BUCKET). _put_object and _get_object retain identical signatures, so upload_xray/upload_pdf/get_xray/get_public_file were untouched — smart.",
+    "_local_path sanitizes '..' but still relies on os.path.join with a caller-provided key. Object keys are generated server-side (f\"{APP_NAME}/uploads/{tenant_id}/{uuid.uuid4()}.{ext}\") so path traversal is not reachable. OK.",
+    "send_email uses smtplib with SMTP_SSL when port==465 else STARTTLS when SMTP_USE_TLS=true. Wrapping in run_in_threadpool avoids blocking the event loop. Returns None silently when SMTP_HOST is empty (logs warning). Matches the requested behaviour.",
+    "forgot-password swallows email send errors and still returns {ok:true} — good for enumeration protection and Railway boot resilience.",
+    "requirements.txt: emergentintegrations removed, boto3 added; smtplib is stdlib (no dep). No leftover httpx/requests-to-emergent-proxy code detected. Note: 'requests>=2.31.0' is still present — kept because tests use it; server.py itself does not import requests anymore, so it's safe."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration8.py"],
+  "success_rate": {"backend": "100% (38/38 passed, 1 intentional skip)", "frontend": "100% smoke — no red screens, all iter-7/8 selectors verified"},
+  "seed_data_creation": "Tests create+cleanup: TEST_Iter8_Patient + dental chart entry + PNG xray + PDF file + 2 invoices (SYP/USD) + 1 appointment + 1 low-stock inventory item + 1 lab order + 1 public booking. All cleaned except: dental chart tooth entry, uploaded PDF (no delete endpoint), and one public booking (auto-scheduled 2026-07-xx randomised). None affects demo data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run: EXPO_PUBLIC_BACKEND_URL=<preview> pytest /app/backend/tests/test_iteration8.py -n 0 --tb=short. pytest.ini forces -n 2 --dist loadscope; iteration_8 test uses class-level shared state (patient id, xray id, invoice ids), so run serially with -n 0 to avoid worker splits. Preview intentionally has S3_BUCKET='' (local FS fallback under /app/backend/uploads) and SMTP_HOST='' (silent skip) — this is expected. Screenshots: /tmp/it8_dash.png, /tmp/it8_patient.png, /tmp/it8_invoices.png.",
+  "rca_of_issue": "N/A — iteration-8 migration validated cleanly."
+}

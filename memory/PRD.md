@@ -4,8 +4,11 @@
 تطبيق ويب/موبايل متكامل لإدارة عيادات الأسنان (Multi-tenant SaaS)، تصميم عصري هادئ (Sage/Slate)، عربي RTL.
 
 ## Architecture
-- Backend: FastAPI + MongoDB (motor), JWT auth (bcrypt), multi-tenant via JWT tenant_id. Emergent Object Storage for X-rays (server-side Pillow compression). Emergent Resend email. Routes under /api.
-- Frontend: Expo Router (RTL, Tajawal font). Bottom tabs + stacks + public routes (book, p). MapView platform-split (WebView native / iframe web).
+- Backend: FastAPI + MongoDB (motor), JWT auth (bcrypt), multi-tenant via JWT tenant_id.
+  - **Storage: boto3 (S3-compatible) with local-filesystem fallback** (set S3_BUCKET to use S3; empty = local `/app/backend/uploads`). Server-side Pillow image compression.
+  - **Email: standard smtplib SMTP** (set SMTP_HOST etc.; empty = reset email skipped, endpoint still returns ok).
+  - No dependency on emergentintegrations — portable to Railway/any host. Routes under /api.
+- Frontend: Expo Router (RTL, Tajawal font). Bottom tabs + stacks + public routes (book, p). MapView platform-split.
 
 ## Personas
 1. المدير العام (super_admin) — owner, manages all doctor/assistant accounts.

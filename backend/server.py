@@ -13,8 +13,9 @@ from typing import List, Optional, Literal, Annotated
 
 import jwt
 import bcrypt
-import httpx
-import requests
+import boto3
+import smtplib
+from email.message import EmailMessage
 from io import BytesIO
 from PIL import Image, ImageOps
 from bson import ObjectId
@@ -36,16 +37,23 @@ JWT_SECRET = os.environ.get('JWT_SECRET', 'eayadati-dev-secret-change-in-prod-64
 JWT_ALGORITHM = 'HS256'
 ACCESS_TOKEN_HOURS = 24 * 7  # 7 days
 
-# Object Storage
-STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https://integrations.emergentagent.com"
-STORAGE_URL = STORAGE_BASE.rstrip("/") + "/objstore/api/v1/storage"
-EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
+# Object Storage — S3-compatible via boto3, with local-filesystem fallback.
 APP_NAME = "eayadati"
-_storage_key: Optional[str] = None
+S3_ENDPOINT_URL = (os.environ.get("S3_ENDPOINT_URL") or "").strip() or None
+S3_REGION = os.environ.get("S3_REGION", "us-east-1")
+S3_ACCESS_KEY_ID = os.environ.get("S3_ACCESS_KEY_ID") or os.environ.get("AWS_ACCESS_KEY_ID")
+S3_SECRET_ACCESS_KEY = os.environ.get("S3_SECRET_ACCESS_KEY") or os.environ.get("AWS_SECRET_ACCESS_KEY")
+S3_BUCKET = os.environ.get("S3_BUCKET")
+LOCAL_STORAGE_DIR = os.environ.get("LOCAL_STORAGE_DIR", str(ROOT_DIR / "uploads"))
+_s3_client = None
 
-# Email (Emergent managed Resend)
-EMAIL_BASE_URL = "https://integrations.emergentagent.com"
-EMAIL_KEY = os.environ.get("EMERGENT_EMAIL_KEY")
+# Email — standard SMTP (smtplib).
+SMTP_HOST = os.environ.get("SMTP_HOST")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("SMTP_USER")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD")
+SMTP_FROM = os.environ.get("SMTP_FROM") or SMTP_USER
+SMTP_USE_TLS = os.environ.get("SMTP_USE_TLS", "true").lower() != "false"
 EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "عيادتي")
 FRONTEND_URL = (os.environ.get("FRONTEND_URL") or "").rstrip("/")
 SUPERADMIN_EMAIL = (os.environ.get("SUPERADMIN_EMAIL") or "").lower()
@@ -237,26 +245,36 @@ async def can_view_financials(user: dict) -> bool:
 
 # ------------------------ Object Storage ------------------------
 
-def _init_storage():
-    global _storage_key
-    if _storage_key:
-        return _storage_key
-    if not EMERGENT_KEY:
-        raise HTTPException(500, "Storage غير مهيأ")
-    resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_KEY}, timeout=30)
-    resp.raise_for_status()
-    _storage_key = resp.json()["storage_key"]
-    return _storage_key
+def _use_s3() -> bool:
+    return bool(S3_BUCKET)
+
+def _get_s3():
+    global _s3_client
+    if _s3_client is None:
+        _s3_client = boto3.client(
+            "s3",
+            endpoint_url=S3_ENDPOINT_URL,
+            region_name=S3_REGION,
+            aws_access_key_id=S3_ACCESS_KEY_ID,
+            aws_secret_access_key=S3_SECRET_ACCESS_KEY,
+        )
+    return _s3_client
+
+def _local_path(path: str) -> str:
+    safe = path.replace("..", "_")
+    full = os.path.join(LOCAL_STORAGE_DIR, safe)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    return full
 
 def _put_object(path: str, data: bytes, content_type: str) -> dict:
-    key = _init_storage()
-    resp = requests.put(
-        f"{STORAGE_URL}/objects/{path}",
-        headers={"X-Storage-Key": key, "Content-Type": content_type},
-        data=data, timeout=120,
-    )
-    resp.raise_for_status()
-    return resp.json()
+    if _use_s3():
+        _get_s3().put_object(Bucket=S3_BUCKET, Key=path, Body=data, ContentType=content_type)
+    else:
+        with open(_local_path(path), "wb") as f:
+            f.write(data)
+        with open(_local_path(path) + ".ct", "w") as f:
+            f.write(content_type)
+    return {"path": path, "size": len(data)}
 
 def _compress_image(data: bytes, max_dim: int = 1600, quality: int = 60) -> Optional[bytes]:
     """Downscale (longest side <= max_dim) and JPEG-encode to reduce storage size
@@ -278,15 +296,19 @@ def _compress_image(data: bytes, max_dim: int = 1600, quality: int = 60) -> Opti
         return None
 
 def _get_object(path: str):
-    global _storage_key
-    key = _init_storage()
-    resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
-    if resp.status_code == 503:
-        _storage_key = None
-        key = _init_storage()
-        resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
-    resp.raise_for_status()
-    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
+    if _use_s3():
+        obj = _get_s3().get_object(Bucket=S3_BUCKET, Key=path)
+        return obj["Body"].read(), obj.get("ContentType", "application/octet-stream")
+    full = _local_path(path)
+    if not os.path.exists(full):
+        raise FileNotFoundError(path)
+    with open(full, "rb") as f:
+        data = f.read()
+    ct = "application/octet-stream"
+    if os.path.exists(full + ".ct"):
+        with open(full + ".ct") as f:
+            ct = f.read().strip() or ct
+    return data, ct
 
 # ------------------------ Startup ------------------------
 
@@ -1030,18 +1052,37 @@ async def summary(user: dict = Depends(get_current_user)):
     result["low_stock_count"] = low_stock
     return result
 
-# ------------------------ Email (Emergent managed Resend) ------------------------
+# ------------------------ Email (standard SMTP) ------------------------
+
+def _send_email_sync(to: str, subject: str, html: str) -> None:
+    if not (SMTP_HOST and SMTP_FROM):
+        raise RuntimeError("SMTP not configured")
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = f"{EMAIL_FROM_NAME} <{SMTP_FROM}>"
+    msg["To"] = to
+    msg.set_content("يتطلب عارض بريد يدعم HTML.")
+    msg.add_alternative(html, subtype="html")
+    if SMTP_PORT == 465:
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30) as s:
+            if SMTP_USER:
+                s.login(SMTP_USER, SMTP_PASSWORD or "")
+            s.send_message(msg)
+    else:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
+            if SMTP_USE_TLS:
+                s.starttls()
+            if SMTP_USER:
+                s.login(SMTP_USER, SMTP_PASSWORD or "")
+            s.send_message(msg)
 
 async def send_email(*, to: str, subject: str, html: str) -> Optional[str]:
-    if not EMAIL_KEY:
-        raise HTTPException(500, "خدمة البريد غير مهيأة")
-    payload = {"to": [to], "subject": subject, "html": html, "from_name": EMAIL_FROM_NAME}
+    if not (SMTP_HOST and SMTP_FROM):
+        logger.warning("SMTP not configured; skipping email send")
+        return None
     try:
-        async with httpx.AsyncClient(timeout=30) as c:
-            resp = await c.post(f"{EMAIL_BASE_URL}/api/v1/email/send",
-                                headers={"X-Email-Key": EMAIL_KEY}, json=payload)
-        resp.raise_for_status()
-        return resp.json().get("id")
+        await run_in_threadpool(_send_email_sync, to, subject, html)
+        return "sent"
     except Exception as e:
         logger.error(f"email send error: {e}")
         raise HTTPException(502, "تعذّر إرسال البريد")
