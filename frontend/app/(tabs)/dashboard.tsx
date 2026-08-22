@@ -170,6 +170,7 @@ export default function Dashboard() {
           <Quick icon="calendar" label="موعد جديد" onPress={() => router.push('/(tabs)/appointments')} />
           <Quick icon="file-plus" label="فاتورة جديدة" onPress={() => router.push('/(tabs)/invoices')} />
           <Quick icon="package" label="المستودع" onPress={() => router.push('/more/inventory')} />
+          <Quick icon="bar-chart-2" label="التقارير المالية" onPress={() => router.push('/more/reports')} />
         </View>
       </ScrollView>
 

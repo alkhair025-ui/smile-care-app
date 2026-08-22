@@ -1134,6 +1134,62 @@ async def summary(user: dict = Depends(get_current_user)):
     result["low_stock_count"] = low_stock
     return result
 
+@api_router.get("/reports/profit")
+async def profit_report(period: str = "monthly", year: int = 0, user: dict = Depends(get_current_user)):
+    """Profit report for a period: daily / weekly / monthly / yearly.
+    Groups revenue, expenses and net profit per currency to avoid mixing currencies.
+    For 'yearly', an explicit `year` (>= 2026) selects the calendar year.
+    """
+    if not await can_view_financials(user):
+        return {"financials_visible": False}
+
+    now = datetime.now()
+    cur_year = now.year
+    if period == "daily":
+        prefix = now.strftime("%Y-%m-%d")
+        label = "اليوم"
+        in_range = lambda d: d[:10] == prefix
+    elif period == "weekly":
+        start = (now - timedelta(days=6)).strftime("%Y-%m-%d")
+        end = now.strftime("%Y-%m-%d")
+        label = "آخر 7 أيام"
+        in_range = lambda d: start <= d[:10] <= end
+    elif period == "yearly":
+        y = year if year and year >= 2026 else cur_year
+        prefix = str(y)
+        label = f"سنة {y}"
+        in_range = lambda d: d[:4] == prefix
+    else:  # monthly (default)
+        prefix = now.strftime("%Y-%m")
+        label = "هذا الشهر"
+        in_range = lambda d: d[:7] == prefix
+
+    invoices = await db.invoices.find({"tenant_id": user["tenant_id"]}).to_list(5000)
+    groups: dict = {}
+    for inv in invoices:
+        d = str(inv.get("date", ""))
+        if not d or not in_range(d):
+            continue
+        cur = inv.get("currency", "SYP") or "SYP"
+        g = groups.setdefault(cur, {"currency": cur, "revenue": 0, "expenses": 0})
+        if inv.get("kind") == "patient":
+            g["revenue"] += inv.get("total", 0)
+        else:
+            g["expenses"] += inv.get("total", 0)
+    by_currency = []
+    for g in groups.values():
+        g["net"] = g["revenue"] - g["expenses"]
+        by_currency.append(g)
+    by_currency.sort(key=lambda g: g["currency"] != "SYP")  # SYP first
+    return {
+        "financials_visible": True,
+        "period": period,
+        "year": year if period == "yearly" else None,
+        "label": label,
+        "by_currency": by_currency,
+    }
+
+
 # ------------------------ Email (standard SMTP) ------------------------
 
 def _send_email_sync(to: str, subject: str, html: str) -> None:

@@ -155,4 +155,6 @@ export const api = {
   deleteLab: (id: string) => request(`/lab-orders/${id}`, { method: 'DELETE' }),
 
   summary: () => request<any>('/reports/summary'),
+  profitReport: (period: string, year?: number) =>
+    request<any>(`/reports/profit?period=${period}${year ? `&year=${year}` : ''}`),
 };
