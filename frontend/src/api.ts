@@ -72,6 +72,8 @@ export const api = {
   adminStats: () => request<any>('/admin/stats'),
   adminResetPassword: (userId: string, new_password: string) => request(`/admin/users/${userId}/reset-password`, { method: 'POST', body: { new_password } }),
   adminToggleDisabled: (userId: string) => request<any>(`/admin/users/${userId}/toggle-disabled`, { method: 'POST' }),
+  adminSetSubscription: (userId: string, status: string, plan?: string) =>
+    request<any>(`/admin/users/${userId}/subscription`, { method: 'POST', body: { status, plan } }),
 
   listAssistants: () => request<User[]>('/auth/assistants'),
   createAssistant: (payload: { email: string; password: string; full_name: string }) =>

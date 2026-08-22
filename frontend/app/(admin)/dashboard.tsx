@@ -8,6 +8,18 @@ import { colors, spacing, radius, font, fontFamily, shadow } from '@/src/theme';
 import { api } from '@/src/api';
 import { useAuth } from '@/src/auth-context';
 
+const SUB_LABELS: Record<string, string> = { trial: 'تجربة مجانية', subscribed: 'مشترك', disabled: 'معطّل' };
+const SUB_COLORS: Record<string, string> = { trial: colors.warning, subscribed: colors.success, disabled: colors.error };
+const PLAN_LABELS: Record<string, string> = { monthly: 'شهري', quarterly: 'ربع سنوي', semiannual: 'نصف سنوي', annual: 'سنوي' };
+const PLANS = ['monthly', 'quarterly', 'semiannual', 'annual'];
+const FILTERS = [
+  { key: 'all', label: 'الكل' },
+  { key: 'trial', label: 'تجربة مجانية' },
+  { key: 'subscribed', label: 'مشترك' },
+  { key: 'disabled', label: 'معطّل' },
+];
+const fmtDate = (iso?: string | null) => (iso ? String(iso).slice(0, 10) : '—');
+
 export default function AdminDashboard() {
   const { user, logout } = useAuth();
   const [doctors, setDoctors] = useState<any[]>([]);
@@ -17,6 +29,8 @@ export default function AdminDashboard() {
   const [q, setQ] = useState('');
   const [menuUser, setMenuUser] = useState<any>(null);
   const [resetUser, setResetUser] = useState<any>(null);
+  const [subUser, setSubUser] = useState<any>(null);
+  const [filter, setFilter] = useState('all');
   const [toast, setToast] = useState('');
 
   const load = useCallback(async () => {
@@ -36,9 +50,13 @@ export default function AdminDashboard() {
     load();
   };
 
-  const filtered = doctors.filter((d) =>
-    !q || d.full_name.includes(q) || d.email.includes(q) || (d.clinic_name || '').includes(q)
-  );
+  const filtered = doctors.filter((d) => {
+    const matchQ = !q || d.full_name.includes(q) || d.email.includes(q) || (d.clinic_name || '').includes(q);
+    const matchF = filter === 'all' || (d.role === 'doctor' && d.sub_status === filter);
+    return matchQ && matchF;
+  });
+
+  const alerts = doctors.filter((d) => d.role === 'doctor' && (d.expiring_soon || d.auto_disabled));
 
   return (
     <View style={styles.root}>
@@ -54,9 +72,9 @@ export default function AdminDashboard() {
           {stats && (
             <View style={styles.statsRow}>
               <Stat label="الأطباء" value={stats.doctors} />
-              <Stat label="العيادات" value={stats.clinics} />
-              <Stat label="المساعدون" value={stats.assistants} />
-              <Stat label="المرضى" value={stats.patients} />
+              <Stat label="تجربة" value={stats.trial ?? 0} />
+              <Stat label="مشترك" value={stats.subscribed ?? 0} />
+              <Stat label="معطّل" value={stats.disabled ?? 0} />
             </View>
           )}
         </SafeAreaView>
@@ -66,6 +84,31 @@ export default function AdminDashboard() {
         <Feather name="search" size={18} color={colors.muted} />
         <TextInput testID="admin-search" value={q} onChangeText={setQ} placeholder="ابحث باسم الطبيب أو العيادة..." placeholderTextColor={colors.muted} style={styles.search} />
       </View>
+
+      <View style={styles.filterRow}>
+        {FILTERS.map((f) => {
+          const active = filter === f.key;
+          return (
+            <Pressable key={f.key} testID={`filter-${f.key}`} onPress={() => setFilter(f.key)} style={[styles.filterChip, active && styles.filterChipActive]}>
+              <Text style={[styles.filterText, active && { color: '#fff' }]}>{f.label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+
+      {alerts.length > 0 && (
+        <View testID="admin-alerts" style={styles.alertBox}>
+          <View style={styles.alertHead}>
+            <Feather name="bell" size={16} color={colors.warning} />
+            <Text style={styles.alertTitle}>تنبيهات الاشتراكات ({alerts.length})</Text>
+          </View>
+          {alerts.map((a) => (
+            <Text key={a.id} style={styles.alertItem}>
+              • {a.full_name} — {a.auto_disabled ? 'انتهى اشتراكه وتم التعطيل تلقائياً' : `ينتهي اشتراكه (${PLAN_LABELS[a.sub_plan] || ''}) خلال ${a.days_left} يوم — ${fmtDate(a.sub_end)}`}
+            </Text>
+          ))}
+        </View>
+      )}
 
       {loading ? <View style={styles.center}><ActivityIndicator size="large" color={colors.brand} /></View> : (
         <FlatList
@@ -78,9 +121,22 @@ export default function AdminDashboard() {
               <View style={styles.avatar}><Feather name={item.role === 'doctor' ? 'user' : 'users'} size={20} color={colors.brand} /></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.name}>{item.full_name}</Text>
-                <Text style={styles.meta}>{item.email}</Text>
                 <Text style={styles.meta}>{item.clinic_name || '—'} · {item.role === 'doctor' ? 'طبيب' : 'مساعد'} · {item.patients_count} مريض</Text>
-                {item.disabled && <View style={styles.disabledBadge}><Text style={styles.disabledText}>معطّل</Text></View>}
+                <Text style={styles.meta}>سجّل في {fmtDate(item.created_at)}{item.clinic_phone ? ` · ${item.clinic_phone}` : ''}</Text>
+                {item.role === 'doctor' && (
+                  <View style={styles.subRow}>
+                    <View style={[styles.subBadge, { backgroundColor: (SUB_COLORS[item.sub_status] || colors.muted) + '22' }]}>
+                      <Text style={[styles.subBadgeText, { color: SUB_COLORS[item.sub_status] || colors.muted }]}>
+                        {SUB_LABELS[item.sub_status] || 'تجربة مجانية'}{item.sub_status === 'subscribed' && item.sub_plan ? ` (${PLAN_LABELS[item.sub_plan]})` : ''}
+                      </Text>
+                    </View>
+                    {item.sub_status === 'subscribed' && (
+                      <Text style={[styles.meta, item.expiring_soon && { color: colors.warning, fontFamily: fontFamily.bold }]}>
+                        ينتهي {fmtDate(item.sub_end)}{item.days_left != null ? ` (${item.days_left} يوم)` : ''}
+                      </Text>
+                    )}
+                  </View>
+                )}
               </View>
               <Pressable testID={`admin-menu-${item.id}`} onPress={() => setMenuUser(item)} hitSlop={8}><Feather name="more-vertical" size={20} color={colors.muted} /></Pressable>
             </View>
@@ -96,6 +152,11 @@ export default function AdminDashboard() {
         <Pressable style={styles.menuOverlay} onPress={() => setMenuUser(null)}>
           <View style={styles.menuSheet}>
             <Text style={styles.menuHeader}>{menuUser?.full_name}</Text>
+            {menuUser?.role === 'doctor' && (
+              <Pressable testID="admin-manage-sub" onPress={() => { setSubUser(menuUser); setMenuUser(null); }} style={styles.menuItem}>
+                <Feather name="award" size={18} color={colors.brand} /><Text style={styles.menuText}>إدارة الاشتراك</Text>
+              </Pressable>
+            )}
             <Pressable testID="admin-reset-pw" onPress={() => { setResetUser(menuUser); setMenuUser(null); }} style={styles.menuItem}>
               <Feather name="key" size={18} color={colors.brand} /><Text style={styles.menuText}>إعادة تعيين كلمة المرور</Text>
             </Pressable>
@@ -108,7 +169,70 @@ export default function AdminDashboard() {
       </Modal>
 
       <ResetPwModal user={resetUser} onClose={() => setResetUser(null)} onDone={(m) => { setResetUser(null); showToast(m); }} />
+      <SubModal user={subUser} onClose={() => setSubUser(null)} onDone={(m) => { setSubUser(null); showToast(m); load(); }} />
     </View>
+  );
+}
+
+function SubModal({ user, onClose, onDone }: any) {
+  const [status, setStatus] = useState('trial');
+  const [plan, setPlan] = useState('monthly');
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState('');
+  React.useEffect(() => {
+    if (user) { setStatus(user.sub_status || 'trial'); setPlan(user.sub_plan || 'monthly'); setErr(''); }
+  }, [user]);
+
+  const submit = async () => {
+    setErr(''); setLoading(true);
+    try {
+      await api.adminSetSubscription(user.id, status, status === 'subscribed' ? plan : undefined);
+      onDone('تم تحديث الاشتراك بنجاح');
+    } catch (e: any) { setErr(e.message); } finally { setLoading(false); }
+  };
+
+  return (
+    <Modal visible={!!user} transparent animationType="slide" onRequestClose={onClose}>
+      <View style={styles.modalOverlay}>
+        <View style={styles.modalSheet}>
+          <View style={styles.modalHeader}>
+            <Pressable onPress={onClose} hitSlop={8}><Feather name="x" size={22} color={colors.onSurface} /></Pressable>
+            <Text style={styles.modalTitle}>إدارة الاشتراك</Text>
+            <View style={{ width: 22 }} />
+          </View>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+            <ScrollView contentContainerStyle={{ padding: spacing.lg }}>
+              <Text style={styles.meta}>الطبيب: {user?.full_name}</Text>
+              <Text style={[styles.label, { marginTop: spacing.md }]}>التصنيف</Text>
+              <View style={styles.optRow}>
+                {['trial', 'subscribed', 'disabled'].map((s) => (
+                  <Pressable key={s} testID={`sub-status-${s}`} onPress={() => setStatus(s)} style={[styles.optChip, status === s && { backgroundColor: colors.brand, borderColor: colors.brand }]}>
+                    <Text style={[styles.optText, status === s && { color: '#fff' }]}>{SUB_LABELS[s]}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              {status === 'subscribed' && (
+                <>
+                  <Text style={[styles.label, { marginTop: spacing.md }]}>نوع الاشتراك</Text>
+                  <View style={styles.optRow}>
+                    {PLANS.map((p) => (
+                      <Pressable key={p} testID={`sub-plan-${p}`} onPress={() => setPlan(p)} style={[styles.optChip, plan === p && { backgroundColor: colors.brand, borderColor: colors.brand }]}>
+                        <Text style={[styles.optText, plan === p && { color: '#fff' }]}>{PLAN_LABELS[p]}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                  <Text style={styles.subHint}>يُحسب تاريخ الاستحقاق تلقائياً من اليوم حسب النوع المختار.</Text>
+                </>
+              )}
+              {err ? <Text style={styles.err}>{err}</Text> : null}
+              <Pressable testID="sub-save" onPress={submit} disabled={loading} style={styles.primaryBtn}>
+                {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryBtnText}>حفظ</Text>}
+              </Pressable>
+            </ScrollView>
+          </KeyboardAvoidingView>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -174,6 +298,21 @@ const styles = StyleSheet.create({
   statLabel: { color: '#C5D3CE', fontSize: 11, fontFamily: fontFamily.regular },
   searchWrap: { flexDirection: 'row-reverse', alignItems: 'center', gap: spacing.sm, margin: spacing.lg, marginBottom: spacing.sm, paddingHorizontal: spacing.md, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border },
   search: { flex: 1, paddingVertical: spacing.md, fontFamily: fontFamily.regular, textAlign: 'right', writingDirection: 'rtl', color: colors.onSurface },
+  filterRow: { flexDirection: 'row-reverse', flexWrap: 'wrap', gap: spacing.sm, paddingHorizontal: spacing.lg, marginBottom: spacing.sm },
+  filterChip: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+  filterChipActive: { backgroundColor: colors.brand, borderColor: colors.brand },
+  filterText: { fontFamily: fontFamily.bold, color: colors.onSurface, fontSize: font.sm },
+  alertBox: { backgroundColor: colors.warningBg, marginHorizontal: spacing.lg, marginBottom: spacing.sm, padding: spacing.md, borderRadius: radius.md, gap: 4 },
+  alertHead: { flexDirection: 'row-reverse', alignItems: 'center', gap: spacing.sm, marginBottom: 2 },
+  alertTitle: { color: colors.warning, fontFamily: fontFamily.bold, fontSize: font.sm },
+  alertItem: { color: colors.onSurfaceSecondary, fontFamily: fontFamily.regular, fontSize: font.sm, textAlign: 'right', writingDirection: 'rtl' },
+  subRow: { flexDirection: 'row-reverse', alignItems: 'center', flexWrap: 'wrap', gap: spacing.sm, marginTop: 4 },
+  subBadge: { paddingHorizontal: spacing.sm, paddingVertical: 2, borderRadius: radius.pill },
+  subBadgeText: { fontSize: 11, fontFamily: fontFamily.bold },
+  optRow: { flexDirection: 'row-reverse', flexWrap: 'wrap', gap: spacing.sm },
+  optChip: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary },
+  optText: { fontFamily: fontFamily.bold, color: colors.onSurface, fontSize: font.sm },
+  subHint: { color: colors.muted, fontFamily: fontFamily.regular, fontSize: font.sm, textAlign: 'right', writingDirection: 'rtl', marginTop: spacing.sm },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: spacing.md, paddingTop: spacing.xxxl },
   card: { flexDirection: 'row-reverse', alignItems: 'center', gap: spacing.md, backgroundColor: colors.surface, padding: spacing.md, borderRadius: radius.md, marginBottom: spacing.sm, ...shadow.card },
   avatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.brandTertiary, alignItems: 'center', justifyContent: 'center' },

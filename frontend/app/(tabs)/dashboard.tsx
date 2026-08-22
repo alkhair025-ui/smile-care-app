@@ -107,6 +107,14 @@ export default function Dashboard() {
         contentContainerStyle={styles.scroll}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.brand} />}
       >
+        {data?.subscription?.expiring_soon && (
+          <View testID="sub-reminder" style={styles.subReminder}>
+            <Feather name="alert-circle" size={18} color={colors.warning} />
+            <Text style={styles.subReminderText}>
+              ينتهي اشتراكك خلال {data.subscription.days_left} يوم ({String(data.subscription.end).slice(0, 10)}). يرجى التجديد لتجنّب إيقاف الحساب.
+            </Text>
+          </View>
+        )}
         <View style={styles.statRow}>
           <StatCard testID="stat-patients" icon="users" label="إجمالي المرضى" value={data?.total_patients ?? 0} color={colors.brand} onPress={() => router.push('/(tabs)/patients')} />
           <StatCard testID="stat-appointments" icon="calendar" label="مواعيد اليوم" value={data?.today_appointments ?? 0} color={colors.info} onPress={() => router.push('/(tabs)/appointments')} />
@@ -272,6 +280,8 @@ const styles = StyleSheet.create({
   dailyRow: { flexDirection: 'row-reverse', gap: spacing.sm },
   reviewBtn: { flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: spacing.sm, marginTop: spacing.md, backgroundColor: colors.warningBg, padding: spacing.md, borderRadius: radius.md },
   reviewText: { color: colors.warning, fontFamily: fontFamily.bold, fontSize: font.sm },
+  subReminder: { flexDirection: 'row-reverse', alignItems: 'center', gap: spacing.sm, backgroundColor: colors.warningBg, padding: spacing.md, borderRadius: radius.md, marginBottom: spacing.md },
+  subReminderText: { flex: 1, color: colors.warning, fontFamily: fontFamily.bold, fontSize: font.sm, textAlign: 'right', writingDirection: 'rtl' },
   cardTitle: { fontSize: font.lg, fontFamily: fontFamily.bold, color: colors.onSurface, marginBottom: spacing.md, textAlign: 'right', writingDirection: 'rtl' },
   finRow: { flexDirection: 'row-reverse', gap: spacing.sm, marginBottom: spacing.sm },
   finTile: { flex: 1, flexDirection: 'row-reverse', gap: spacing.sm, backgroundColor: colors.surfaceSecondary, padding: spacing.md, borderRadius: radius.md, alignItems: 'center' },

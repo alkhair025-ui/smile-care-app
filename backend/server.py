@@ -461,6 +461,7 @@ async def register(data: RegisterIn):
     if await db.users.find_one({"email": email}):
         raise HTTPException(409, "البريد الإلكتروني مسجل مسبقاً")
     tenant_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
     user_doc = {
         "email": email,
         "password_hash": hash_password(data.password),
@@ -468,7 +469,13 @@ async def register(data: RegisterIn):
         "tenant_id": tenant_id,
         "role": "doctor",
         "disabled": False,
-        "created_at": datetime.now(timezone.utc),
+        "created_at": now,
+        # New signups start on a free trial automatically, with no expiry until the
+        # super admin manually converts them to a paid subscription.
+        "sub_status": "trial",
+        "sub_plan": "",
+        "sub_start": now.isoformat(),
+        "sub_end": None,
     }
     r = await db.users.insert_one(user_doc)
     user_doc["_id"] = r.inserted_id
@@ -487,6 +494,8 @@ async def login(data: LoginIn):
     user = await db.users.find_one({"email": data.email.lower()})
     if not user or not verify_password(data.password, user["password_hash"]):
         raise HTTPException(401, "بريد أو كلمة مرور غير صحيحة")
+    if user.get("role") == "doctor":
+        user = await _apply_subscription(user)
     if user.get("disabled"):
         raise HTTPException(403, "تم تعطيل هذا الحساب. يرجى التواصل مع الإدارة.")
     tenant = await get_tenant(user["tenant_id"])
@@ -1090,6 +1099,16 @@ async def summary(user: dict = Depends(get_current_user)):
         "financials_visible": financials_visible,
     }
 
+    if user.get("role") == "doctor":
+        d_left = _sub_days_left(user) if user.get("sub_status") == "subscribed" else None
+        result["subscription"] = {
+            "status": user.get("sub_status", "trial"),
+            "plan": user.get("sub_plan", ""),
+            "end": user.get("sub_end"),
+            "days_left": d_left,
+            "expiring_soon": (d_left is not None and 0 <= d_left <= SUB_ALERT_DAYS),
+        }
+
     if financials_visible:
         invoices = await db.invoices.find({"tenant_id": tenant_id}).to_list(5000)
         revenue = sum(i.get("total", 0) for i in invoices if i.get("kind") == "patient")
@@ -1296,13 +1315,54 @@ async def reset_password(data: ResetIn):
 class AdminResetIn(BaseModel):
     new_password: str = Field(min_length=6, max_length=72)
 
+class SubscriptionIn(BaseModel):
+    status: Literal["trial", "subscribed", "disabled"]
+    plan: Optional[Literal["monthly", "quarterly", "semiannual", "annual"]] = None
+
+PLAN_DAYS = {"monthly": 30, "quarterly": 91, "semiannual": 182, "annual": 365}
+SUB_ALERT_DAYS = 14  # notify doctor + admin two weeks before expiry
+
+def _sub_days_left(u: dict):
+    end = u.get("sub_end")
+    if not end:
+        return None
+    try:
+        end_dt = datetime.fromisoformat(end)
+    except Exception:
+        return None
+    if end_dt.tzinfo is None:
+        end_dt = end_dt.replace(tzinfo=timezone.utc)
+    return (end_dt - datetime.now(timezone.utc)).days
+
+async def _apply_subscription(u: dict) -> dict:
+    """Lazily auto-disable a paid subscription that has passed its end date.
+    Runs on login and whenever the admin lists doctors, so no scheduler is needed."""
+    if u.get("sub_status") == "subscribed" and u.get("sub_end"):
+        try:
+            end_dt = datetime.fromisoformat(u["sub_end"])
+            if end_dt.tzinfo is None:
+                end_dt = end_dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            return u
+        if end_dt < datetime.now(timezone.utc):
+            now_iso = datetime.now(timezone.utc).isoformat()
+            await db.users.update_one({"_id": u["_id"]}, {"$set": {
+                "sub_status": "disabled", "disabled": True, "auto_disabled_at": now_iso,
+            }})
+            u["sub_status"] = "disabled"; u["disabled"] = True; u["auto_disabled_at"] = now_iso
+    return u
+
 @api_router.get("/admin/doctors")
 async def admin_list_doctors(admin: dict = Depends(require_role("super_admin"))):
     users = await db.users.find({"role": {"$in": ["doctor", "assistant"]}}).sort("created_at", -1).to_list(1000)
     out = []
     for u in users:
+        if u.get("role") == "doctor":
+            u = await _apply_subscription(u)
         tenant = await get_tenant(u["tenant_id"])
         patients = await db.patients.count_documents({"tenant_id": u["tenant_id"]})
+        sub_status = u.get("sub_status", "trial") if u.get("role") == "doctor" else None
+        days_left = _sub_days_left(u) if sub_status == "subscribed" else None
         out.append({
             "id": str(u["_id"]),
             "email": u["email"],
@@ -1310,11 +1370,43 @@ async def admin_list_doctors(admin: dict = Depends(require_role("super_admin")))
             "role": u["role"],
             "tenant_id": u["tenant_id"],
             "clinic_name": tenant.get("clinic_name", ""),
+            "clinic_phone": tenant.get("clinic_phone", ""),
             "disabled": u.get("disabled", False),
             "patients_count": patients,
             "created_at": u["created_at"].isoformat() if isinstance(u.get("created_at"), datetime) else u.get("created_at"),
+            "sub_status": sub_status,
+            "sub_plan": u.get("sub_plan", "") if u.get("role") == "doctor" else "",
+            "sub_start": u.get("sub_start") if u.get("role") == "doctor" else None,
+            "sub_end": u.get("sub_end") if u.get("role") == "doctor" else None,
+            "days_left": days_left,
+            "expiring_soon": (days_left is not None and 0 <= days_left <= SUB_ALERT_DAYS),
+            "auto_disabled": bool(u.get("auto_disabled_at")) if u.get("role") == "doctor" else False,
         })
     return out
+
+@api_router.post("/admin/users/{user_id}/subscription")
+async def admin_set_subscription(user_id: str, data: SubscriptionIn, admin: dict = Depends(require_role("super_admin"))):
+    target = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not target or target.get("role") != "doctor":
+        raise HTTPException(404, "الطبيب غير موجود")
+    now = datetime.now(timezone.utc)
+    update: dict = {"sub_status": data.status, "auto_disabled_at": None}
+    if data.status == "subscribed":
+        if not data.plan:
+            raise HTTPException(400, "يرجى تحديد نوع الاشتراك")
+        update["sub_plan"] = data.plan
+        update["sub_start"] = now.isoformat()
+        update["sub_end"] = (now + timedelta(days=PLAN_DAYS[data.plan])).isoformat()
+        update["disabled"] = False
+    elif data.status == "trial":
+        update["sub_plan"] = ""
+        update["sub_start"] = now.isoformat()
+        update["sub_end"] = None
+        update["disabled"] = False
+    else:  # disabled (manual)
+        update["disabled"] = True
+    await db.users.update_one({"_id": ObjectId(user_id)}, {"$set": update})
+    return {"ok": True, "sub_status": data.status, "sub_end": update.get("sub_end")}
 
 @api_router.post("/admin/users/{user_id}/reset-password")
 async def admin_reset_password(user_id: str, data: AdminResetIn, admin: dict = Depends(require_role("super_admin"))):
@@ -1339,7 +1431,11 @@ async def admin_stats(admin: dict = Depends(require_role("super_admin"))):
     assistants = await db.users.count_documents({"role": "assistant"})
     clinics = await db.tenants.count_documents({})
     patients = await db.patients.count_documents({})
-    return {"doctors": doctors, "assistants": assistants, "clinics": clinics, "patients": patients}
+    subscribed = await db.users.count_documents({"role": "doctor", "sub_status": "subscribed"})
+    disabled = await db.users.count_documents({"role": "doctor", "sub_status": "disabled"})
+    trial = doctors - subscribed - disabled
+    return {"doctors": doctors, "assistants": assistants, "clinics": clinics, "patients": patients,
+            "trial": max(0, trial), "subscribed": subscribed, "disabled": disabled}
 
 # ------------------------ App wiring ------------------------
 
