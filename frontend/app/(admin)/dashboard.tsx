@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, Pressable, TextInput, Modal, ScrollView, ActivityIndicator, RefreshControl, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, Text, StyleSheet, FlatList, Pressable, TextInput, Modal, ScrollView, ActivityIndicator, RefreshControl, KeyboardAvoidingView, Platform, Linking } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -139,6 +139,16 @@ export default function AdminDashboard() {
                 )}
               </View>
               <Pressable testID={`admin-menu-${item.id}`} onPress={() => setMenuUser(item)} hitSlop={8}><Feather name="more-vertical" size={20} color={colors.muted} /></Pressable>
+              {item.clinic_phone ? (
+                <Pressable
+                  testID={`admin-wa-${item.id}`}
+                  onPress={() => Linking.openURL(`https://wa.me/${item.clinic_phone.replace(/[^\d]/g, '')}?text=${encodeURIComponent(`مرحباً ${item.full_name}، بخصوص اشتراك عيادتك في تطبيق عيادتي.`)}`).catch(() => {})}
+                  hitSlop={8}
+                  style={styles.waBtn}
+                >
+                  <Feather name="message-circle" size={18} color="#25D366" />
+                </Pressable>
+              ) : null}
             </View>
           )}
           ListEmptyComponent={<View style={styles.center}><Feather name="users" size={48} color={colors.borderStrong} /><Text style={styles.meta}>لا توجد حسابات</Text></View>}
@@ -228,6 +238,26 @@ function SubModal({ user, onClose, onDone }: any) {
               <Pressable testID="sub-save" onPress={submit} disabled={loading} style={styles.primaryBtn}>
                 {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryBtnText}>حفظ</Text>}
               </Pressable>
+
+              <Text style={[styles.label, { marginTop: spacing.lg }]}>سجل الاشتراك</Text>
+              {(user?.sub_history || []).length === 0 ? (
+                <Text style={styles.subHint}>لا يوجد سجل بعد.</Text>
+              ) : (
+                (user?.sub_history || []).map((h: any, i: number) => (
+                  <View key={i} style={styles.histRow} testID={`sub-hist-${i}`}>
+                    <View style={[styles.histDot, { backgroundColor: SUB_COLORS[h.status] || colors.muted }]} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.histTitle}>
+                        {SUB_LABELS[h.status] || h.status}{h.status === 'subscribed' && h.plan ? ` (${PLAN_LABELS[h.plan]})` : ''}
+                        {h.auto ? ' · تلقائي' : ''}
+                      </Text>
+                      <Text style={styles.histMeta}>
+                        {fmtDate(h.at)} · بواسطة {h.by || '—'}{h.end ? ` · ينتهي ${fmtDate(h.end)}` : ''}
+                      </Text>
+                    </View>
+                  </View>
+                ))
+              )}
             </ScrollView>
           </KeyboardAvoidingView>
         </View>
@@ -313,6 +343,11 @@ const styles = StyleSheet.create({
   optChip: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary },
   optText: { fontFamily: fontFamily.bold, color: colors.onSurface, fontSize: font.sm },
   subHint: { color: colors.muted, fontFamily: fontFamily.regular, fontSize: font.sm, textAlign: 'right', writingDirection: 'rtl', marginTop: spacing.sm },
+  waBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#25D36618', alignItems: 'center', justifyContent: 'center', marginRight: spacing.xs },
+  histRow: { flexDirection: 'row-reverse', alignItems: 'flex-start', gap: spacing.sm, paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.divider },
+  histDot: { width: 10, height: 10, borderRadius: 5, marginTop: 5 },
+  histTitle: { fontFamily: fontFamily.bold, color: colors.onSurface, fontSize: font.sm, textAlign: 'right', writingDirection: 'rtl' },
+  histMeta: { fontFamily: fontFamily.regular, color: colors.muted, fontSize: 11, textAlign: 'right', writingDirection: 'rtl', marginTop: 2 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: spacing.md, paddingTop: spacing.xxxl },
   card: { flexDirection: 'row-reverse', alignItems: 'center', gap: spacing.md, backgroundColor: colors.surface, padding: spacing.md, borderRadius: radius.md, marginBottom: spacing.sm, ...shadow.card },
   avatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.brandTertiary, alignItems: 'center', justifyContent: 'center' },

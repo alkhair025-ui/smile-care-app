@@ -476,6 +476,10 @@ async def register(data: RegisterIn):
         "sub_plan": "",
         "sub_start": now.isoformat(),
         "sub_end": None,
+        "sub_history": [{
+            "status": "trial", "plan": "", "start": now.isoformat(), "end": None,
+            "at": now.isoformat(), "by": "تسجيل تلقائي", "auto": True,
+        }],
     }
     r = await db.users.insert_one(user_doc)
     user_doc["_id"] = r.inserted_id
@@ -1346,9 +1350,13 @@ async def _apply_subscription(u: dict) -> dict:
             return u
         if end_dt < datetime.now(timezone.utc):
             now_iso = datetime.now(timezone.utc).isoformat()
-            await db.users.update_one({"_id": u["_id"]}, {"$set": {
-                "sub_status": "disabled", "disabled": True, "auto_disabled_at": now_iso,
-            }})
+            entry = {"status": "disabled", "plan": u.get("sub_plan", ""), "start": u.get("sub_start"),
+                     "end": u.get("sub_end"), "at": now_iso, "by": "النظام", "auto": True,
+                     "note": "تعطيل تلقائي عند انتهاء الاشتراك"}
+            await db.users.update_one({"_id": u["_id"]}, {
+                "$set": {"sub_status": "disabled", "disabled": True, "auto_disabled_at": now_iso},
+                "$push": {"sub_history": entry},
+            })
             u["sub_status"] = "disabled"; u["disabled"] = True; u["auto_disabled_at"] = now_iso
     return u
 
@@ -1381,6 +1389,7 @@ async def admin_list_doctors(admin: dict = Depends(require_role("super_admin")))
             "days_left": days_left,
             "expiring_soon": (days_left is not None and 0 <= days_left <= SUB_ALERT_DAYS),
             "auto_disabled": bool(u.get("auto_disabled_at")) if u.get("role") == "doctor" else False,
+            "sub_history": list(reversed(u.get("sub_history", []))) if u.get("role") == "doctor" else [],
         })
     return out
 
@@ -1406,6 +1415,13 @@ async def admin_set_subscription(user_id: str, data: SubscriptionIn, admin: dict
     else:  # disabled (manual)
         update["disabled"] = True
     await db.users.update_one({"_id": ObjectId(user_id)}, {"$set": update})
+    entry = {
+        "status": data.status, "plan": update.get("sub_plan", ""),
+        "start": update.get("sub_start"), "end": update.get("sub_end"),
+        "at": now.isoformat(), "by": admin.get("full_name") or admin.get("email") or "المدير العام",
+        "auto": False,
+    }
+    await db.users.update_one({"_id": ObjectId(user_id)}, {"$push": {"sub_history": entry}})
     return {"ok": True, "sub_status": data.status, "sub_end": update.get("sub_end")}
 
 @api_router.post("/admin/users/{user_id}/reset-password")
