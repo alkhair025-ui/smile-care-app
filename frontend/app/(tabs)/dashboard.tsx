@@ -3,12 +3,15 @@ import { View, Text, StyleSheet, ScrollView, Pressable, RefreshControl, Activity
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import Svg, { Rect, Line, Text as SvgText } from 'react-native-svg';
 import { colors, spacing, radius, font, fontFamily, shadow } from '@/src/theme';
 import { useAuth } from '@/src/auth-context';
 import { api } from '@/src/api';
+import { curSymbol, curName } from '@/src/currencies';
 
-const fmt = (n: number) => `${Math.round(n).toLocaleString('en')} ل.س`;
+const CUR_PREF_KEY = 'dashboard_currency';
+const money = (n: number, cur = 'SYP') => `${Math.round(n || 0).toLocaleString('en')} ${curSymbol(cur)}`;
 
 function StatCard({ icon, label, value, color, testID, onPress }: any) {
   const Container: any = onPress ? Pressable : View;
@@ -63,6 +66,12 @@ export default function Dashboard() {
   const [lowStockOpen, setLowStockOpen] = useState(false);
   const [lowStockItems, setLowStockItems] = useState<any[]>([]);
   const [lowStockLoading, setLowStockLoading] = useState(false);
+  const [currency, setCurrency] = useState<string | undefined>(undefined);
+  const [curOpen, setCurOpen] = useState(false);
+
+  useEffect(() => {
+    AsyncStorage.getItem(CUR_PREF_KEY).then((v) => { if (v) setCurrency(v); });
+  }, []);
 
   const openLowStock = async () => {
     setLowStockOpen(true);
@@ -76,21 +85,30 @@ export default function Dashboard() {
 
   const load = useCallback(async () => {
     try {
-      const s = await api.summary();
+      const s = await api.summary(currency);
       setData(s);
     } catch (e) { /* noop */ }
     finally { setLoading(false); setRefreshing(false); }
-  }, []);
+  }, [currency]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   const onRefresh = () => { setRefreshing(true); load(); };
+
+  const changeCurrency = (cur: string) => {
+    setCurOpen(false);
+    setCurrency(cur);
+    AsyncStorage.setItem(CUR_PREF_KEY, cur).catch(() => {});
+  };
 
   if (loading) return (
     <SafeAreaView style={styles.root}><View style={styles.center}><ActivityIndicator size="large" color={colors.brand} /></View></SafeAreaView>
   );
 
   const showFin = data?.financials_visible;
+  const cur = data?.currency || currency || 'SYP';
+  const m = (n: number) => money(n, cur);
+  const currencies: string[] = data?.currencies || [];
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
       <View style={styles.header}>
@@ -107,6 +125,13 @@ export default function Dashboard() {
         contentContainerStyle={styles.scroll}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.brand} />}
       >
+        {showFin && currencies.length > 0 && (
+          <Pressable testID="dash-currency" onPress={() => setCurOpen(true)} style={styles.curSelector}>
+            <Feather name="chevron-down" size={18} color={colors.brand} />
+            <Text style={styles.curSelectorText}>عرض بعملة: {curName(cur)} ({curSymbol(cur)})</Text>
+            <Feather name="dollar-sign" size={16} color={colors.brand} />
+          </Pressable>
+        )}
         {data?.subscription?.expiring_soon && (
           <View testID="sub-reminder" style={styles.subReminder}>
             <Feather name="alert-circle" size={18} color={colors.warning} />
@@ -129,7 +154,7 @@ export default function Dashboard() {
           <View style={styles.dailyRow}>
             <DailyTile icon="calendar" label="مواعيد اليوم" value={data?.today_appointments ?? 0} color={colors.info} />
             <DailyTile icon="clock" label="حجوزات جديدة" value={data?.new_bookings ?? 0} color={colors.warning} highlight={(data?.new_bookings ?? 0) > 0} />
-            {showFin && <DailyTile icon="trending-up" label="دخل اليوم" value={fmt(data?.today_income || 0)} color={colors.success} small />}
+            {showFin && <DailyTile icon="trending-up" label="دخل اليوم" value={m(data?.today_income || 0)} color={colors.success} small />}
           </View>
           {(data?.new_bookings ?? 0) > 0 && (
             <Pressable testID="review-bookings" onPress={() => router.push('/(tabs)/appointments')} style={styles.reviewBtn}>
@@ -144,17 +169,17 @@ export default function Dashboard() {
             <View style={styles.card}>
               <Text style={styles.cardTitle}>الملخّص المالي</Text>
               <View style={styles.finRow}>
-                <FinTile label="الإيرادات" val={fmt(data.revenue)} color={colors.success} />
-                <FinTile label="المشتريات" val={fmt(data.purchases)} color={colors.warning} />
+                <FinTile label="الإيرادات" val={m(data.revenue)} color={colors.success} />
+                <FinTile label="المشتريات" val={m(data.purchases)} color={colors.warning} />
               </View>
               <View style={styles.finRow}>
-                <FinTile label="الرواتب" val={fmt(data.salaries)} color={colors.info} />
-                <FinTile label="المصاريف" val={fmt(data.expenses)} color={colors.error} />
+                <FinTile label="الرواتب" val={m(data.salaries)} color={colors.info} />
+                <FinTile label="المصاريف" val={m(data.expenses)} color={colors.error} />
               </View>
               <View style={styles.profitBox}>
                 <Text style={styles.profitLabel}>صافي الربح</Text>
                 <Text style={[styles.profitVal, { color: data.net_profit >= 0 ? colors.success : colors.error }]}>
-                  {fmt(data.net_profit)}
+                  {m(data.net_profit)}
                 </Text>
               </View>
             </View>
@@ -216,6 +241,24 @@ export default function Dashboard() {
             </Pressable>
           </View>
         </View>
+      </Modal>
+
+      <Modal visible={curOpen} transparent animationType="fade" onRequestClose={() => setCurOpen(false)}>
+        <Pressable style={styles.modalOverlay} onPress={() => setCurOpen(false)}>
+          <Pressable style={styles.curSheet} onPress={() => {}}>
+            <Text style={styles.modalTitle}>اختر العملة</Text>
+            <Text style={styles.curSheetHint}>تُعرض وتُحسب كل عملة على حدة دون دمج.</Text>
+            {currencies.map((c) => {
+              const active = c === cur;
+              return (
+                <Pressable key={c} testID={`dash-cur-${c}`} onPress={() => changeCurrency(c)} style={[styles.curRow, active && styles.curRowActive]}>
+                  <Text style={[styles.curRowText, active && { color: '#fff' }]}>{curName(c)} ({curSymbol(c)})</Text>
+                  {active ? <Feather name="check" size={18} color="#fff" /> : <Text style={styles.curRowCode}>{c}</Text>}
+                </Pressable>
+              );
+            })}
+          </Pressable>
+        </Pressable>
       </Modal>
     </SafeAreaView>
   );
@@ -282,6 +325,14 @@ const styles = StyleSheet.create({
   reviewText: { color: colors.warning, fontFamily: fontFamily.bold, fontSize: font.sm },
   subReminder: { flexDirection: 'row-reverse', alignItems: 'center', gap: spacing.sm, backgroundColor: colors.warningBg, padding: spacing.md, borderRadius: radius.md, marginBottom: spacing.md },
   subReminderText: { flex: 1, color: colors.warning, fontFamily: fontFamily.bold, fontSize: font.sm, textAlign: 'right', writingDirection: 'rtl' },
+  curSelector: { flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'space-between', backgroundColor: colors.brandTertiary, borderWidth: 1, borderColor: colors.brand, borderRadius: radius.md, paddingHorizontal: spacing.md, paddingVertical: spacing.md, marginBottom: spacing.md },
+  curSelectorText: { flex: 1, marginHorizontal: spacing.sm, color: colors.brand, fontFamily: fontFamily.bold, textAlign: 'right', writingDirection: 'rtl' },
+  curSheet: { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.lg, width: '86%', maxWidth: 420, gap: spacing.sm },
+  curSheetHint: { color: colors.muted, fontFamily: fontFamily.regular, fontSize: font.sm, textAlign: 'right', writingDirection: 'rtl', marginBottom: spacing.xs },
+  curRow: { flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.md, paddingVertical: spacing.md, borderRadius: radius.md, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border },
+  curRowActive: { backgroundColor: colors.brand, borderColor: colors.brand },
+  curRowText: { fontFamily: fontFamily.bold, color: colors.onSurface, fontSize: font.base },
+  curRowCode: { fontFamily: fontFamily.medium, color: colors.muted, fontSize: font.sm },
   cardTitle: { fontSize: font.lg, fontFamily: fontFamily.bold, color: colors.onSurface, marginBottom: spacing.md, textAlign: 'right', writingDirection: 'rtl' },
   finRow: { flexDirection: 'row-reverse', gap: spacing.sm, marginBottom: spacing.sm },
   finTile: { flex: 1, flexDirection: 'row-reverse', gap: spacing.sm, backgroundColor: colors.surfaceSecondary, padding: spacing.md, borderRadius: radius.md, alignItems: 'center' },
