@@ -22,6 +22,8 @@ const QUADRANTS = [
   { key: 'Q4', label: 'الربع الرابع · سفلي أيمن', teeth: Q4 },
   { key: 'Q3', label: 'الربع الثالث · سفلي أيسر', teeth: Q3 },
 ];
+// Most-used treatments shown as direct buttons; everything else lives in the searchable "all types" sheet.
+const FREQUENT = ['caries', 'filling', 'crown', 'extracted', 'healthy'];
 
 export default function PatientDetail() {
   const router = useRouter();
@@ -44,6 +46,8 @@ export default function PatientDetail() {
   const [newTypeLabel, setNewTypeLabel] = useState('');
   const [addingType, setAddingType] = useState(false);
   const [addTypeErr, setAddTypeErr] = useState('');
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [moreSearch, setMoreSearch] = useState('');
 
   const { colorMap, labelMap, conditions } = useMemo(() => buildTreatmentMaps(customTypes), [customTypes]);
 
@@ -207,7 +211,7 @@ export default function PatientDetail() {
         <SectionCard icon="grid" title="مخطط الأسنان (FDI)">
           <Text style={styles.paletteHint}>اختر نوع المعالجة ثم اضغط على السن لتطبيقه</Text>
           <View style={styles.paletteWrap}>
-            {conditions.map((c) => {
+            {FREQUENT.map((c) => {
               const active = activeCondition === c;
               return (
                 <Pressable key={c} testID={`palette-${c}`} onPress={() => setActiveCondition(c)} style={[styles.paletteChip, active && styles.paletteChipActive]}>
@@ -216,9 +220,14 @@ export default function PatientDetail() {
                 </Pressable>
               );
             })}
-            <Pressable testID="add-treatment-type" onPress={() => setAddTypeOpen(true)} style={[styles.paletteChip, styles.addTypeChip]}>
-              <Feather name="plus-circle" size={16} color={colors.brand} />
-              <Text style={[styles.paletteText, { color: colors.brand }]}>نوع جديد</Text>
+            <Pressable testID="more-types-btn" onPress={() => { setMoreSearch(''); setMoreOpen(true); }} style={[styles.paletteChip, styles.moreChip, !FREQUENT.includes(activeCondition) && styles.paletteChipActive]}>
+              {!FREQUENT.includes(activeCondition)
+                ? <View style={[styles.condDot, { backgroundColor: colorMap[activeCondition], borderColor: colorMap[activeCondition] }]} />
+                : <Feather name="grid" size={15} color={colors.brand} />}
+              <Text style={[styles.paletteText, { color: !FREQUENT.includes(activeCondition) ? '#fff' : colors.brand }]}>
+                {!FREQUENT.includes(activeCondition) ? labelMap[activeCondition] : 'كل الأنواع'}
+              </Text>
+              <Feather name="chevron-down" size={15} color={!FREQUENT.includes(activeCondition) ? '#fff' : colors.brand} />
             </Pressable>
           </View>
 
@@ -228,15 +237,6 @@ export default function PatientDetail() {
               <View style={styles.arch}>{q.teeth.map((n) => <Tooth key={n} n={n} chart={chart} onApply={applyToTooth} colorMap={colorMap} />)}</View>
             </View>
           ))}
-
-          <View style={styles.legendWrap}>
-            {conditions.map((k) => (
-              <View key={k} style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: colorMap[k], borderWidth: k === 'healthy' ? 1 : 0, borderColor: colors.border }]} />
-                <Text style={styles.legendText}>{labelMap[k]}</Text>
-              </View>
-            ))}
-          </View>
         </SectionCard>
 
         {/* X-rays */}
@@ -283,6 +283,38 @@ export default function PatientDetail() {
           ))}
         </SectionCard>
       </ScrollView>
+
+      <Modal visible={moreOpen} transparent animationType="slide" onRequestClose={() => setMoreOpen(false)}>
+        <Pressable style={styles.sheetOverlay} onPress={() => setMoreOpen(false)}>
+          <Pressable style={styles.moreSheet} onPress={() => {}}>
+            <View style={styles.moreHeader}>
+              <Pressable testID="more-close" onPress={() => setMoreOpen(false)} hitSlop={8}><Feather name="x" size={22} color={colors.onSurface} /></Pressable>
+              <Text style={styles.sheetTitle}>كل أنواع العلاجات</Text>
+              <View style={{ width: 22 }} />
+            </View>
+            <View style={styles.moreSearchWrap}>
+              <Feather name="search" size={18} color={colors.muted} />
+              <TextInput testID="more-search" value={moreSearch} onChangeText={setMoreSearch} placeholder="ابحث عن نوع العلاج..." placeholderTextColor={colors.muted} style={styles.moreSearchInput} autoFocus />
+            </View>
+            <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingTop: 0 }} keyboardShouldPersistTaps="handled">
+              {conditions.filter((c) => !moreSearch.trim() || (labelMap[c] || '').includes(moreSearch.trim())).map((c) => {
+                const active = activeCondition === c;
+                return (
+                  <Pressable key={c} testID={`more-opt-${c}`} onPress={() => { setActiveCondition(c); setMoreOpen(false); }} style={[styles.moreRow, active && styles.moreRowActive]}>
+                    <View style={[styles.condDot, { backgroundColor: colorMap[c], borderColor: c === 'healthy' ? colors.border : colorMap[c] }]} />
+                    <Text style={[styles.moreRowText, active && { color: '#fff' }]}>{labelMap[c]}</Text>
+                    {active ? <Feather name="check" size={18} color="#fff" /> : null}
+                  </Pressable>
+                );
+              })}
+              <Pressable testID="add-treatment-type" onPress={() => { setMoreOpen(false); setAddTypeOpen(true); }} style={[styles.moreRow, styles.moreAddRow]}>
+                <Feather name="plus-circle" size={16} color={colors.brand} />
+                <Text style={[styles.moreRowText, { color: colors.brand }]}>نوع جديد</Text>
+              </Pressable>
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       <Modal visible={addTypeOpen} transparent animationType="fade" onRequestClose={() => setAddTypeOpen(false)}>
         <Pressable style={styles.sheetOverlay} onPress={() => setAddTypeOpen(false)}>
@@ -360,6 +392,15 @@ const styles = StyleSheet.create({
   paletteText: { fontFamily: fontFamily.bold, color: colors.onSurface, fontSize: font.sm },
   quadrant: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.sm },
   quadLabel: { color: colors.onSurfaceSecondary, fontFamily: fontFamily.bold, fontSize: font.sm, textAlign: 'center', marginBottom: spacing.sm },
+  moreChip: { borderColor: colors.brand },
+  moreSheet: { backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '75%', paddingBottom: spacing.md },
+  moreHeader: { flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center', padding: spacing.lg, borderBottomWidth: 1, borderBottomColor: colors.divider },
+  moreSearchWrap: { flexDirection: 'row-reverse', alignItems: 'center', gap: spacing.sm, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, paddingHorizontal: spacing.md, marginHorizontal: spacing.lg, marginVertical: spacing.md },
+  moreSearchInput: { flex: 1, paddingVertical: spacing.md, color: colors.onSurface, fontFamily: fontFamily.regular, textAlign: 'right', writingDirection: 'rtl' },
+  moreRow: { flexDirection: 'row-reverse', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.md, marginBottom: spacing.sm, borderRadius: radius.md, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border },
+  moreRowActive: { backgroundColor: colors.brand, borderColor: colors.brand },
+  moreRowText: { flex: 1, fontFamily: fontFamily.bold, color: colors.onSurface, fontSize: font.base, textAlign: 'right', writingDirection: 'rtl' },
+  moreAddRow: { justifyContent: 'center', borderStyle: 'dashed', backgroundColor: colors.brandTertiary },
   midDivider: { height: 1, backgroundColor: colors.border, marginVertical: spacing.md },
   tooth: { width: 32, height: 40, borderRadius: 6, borderWidth: 1, borderColor: colors.borderStrong, alignItems: 'center', justifyContent: 'center' },
   toothNum: { fontSize: 10, fontFamily: fontFamily.bold },
