@@ -1081,7 +1081,7 @@ async def delete_lab(lid: str, user: dict = Depends(get_current_user)):
 # ------------------------ Reports / Dashboard ------------------------
 
 @api_router.get("/reports/summary")
-async def summary(user: dict = Depends(get_current_user)):
+async def summary(currency: Optional[str] = None, user: dict = Depends(get_current_user)):
     tenant_id = user["tenant_id"]
     financials_visible = await can_view_financials(user)
 
@@ -1115,12 +1115,25 @@ async def summary(user: dict = Depends(get_current_user)):
 
     if financials_visible:
         invoices = await db.invoices.find({"tenant_id": tenant_id}).to_list(5000)
-        revenue = sum(i.get("total", 0) for i in invoices if i.get("kind") == "patient")
-        purchases = sum(i.get("total", 0) for i in invoices if i.get("kind") == "purchase")
-        salaries = sum(i.get("total", 0) for i in invoices if i.get("kind") == "salary")
-        expenses = sum(i.get("total", 0) for i in invoices if i.get("kind") == "expense")
+
+        # Distinct currencies actually present in this account's records (SYP, USD first).
+        currencies = sorted({(i.get("currency") or "SYP") for i in invoices},
+                            key=lambda c: (c != "SYP", c != "USD", c))
+        if not currencies:
+            currencies = ["SYP"]
+        # Selected currency: requested one if valid, else the first available.
+        cur = currency if (currency in currencies) else currencies[0]
+        result["currencies"] = currencies
+        result["currency"] = cur
+
+        # Only aggregate records that belong to the selected currency — never mix currencies.
+        cinv = [i for i in invoices if (i.get("currency") or "SYP") == cur]
+        revenue = sum(i.get("total", 0) for i in cinv if i.get("kind") == "patient")
+        purchases = sum(i.get("total", 0) for i in cinv if i.get("kind") == "purchase")
+        salaries = sum(i.get("total", 0) for i in cinv if i.get("kind") == "salary")
+        expenses = sum(i.get("total", 0) for i in cinv if i.get("kind") == "expense")
         today_income = sum(
-            i.get("total", 0) for i in invoices
+            i.get("total", 0) for i in cinv
             if i.get("kind") == "patient" and str(i.get("date", "")).startswith(today_date)
         )
         result["today_income"] = today_income
@@ -1132,13 +1145,13 @@ async def summary(user: dict = Depends(get_current_user)):
             "net_profit": revenue - purchases - salaries - expenses,
         })
 
-        # Monthly breakdown (last 6 months)
+        # Monthly breakdown (last 6 months) — selected currency only
         now = datetime.now(timezone.utc)
         months = []
         for i in range(5, -1, -1):
             month_dt = (now.replace(day=1) - timedelta(days=30 * i))
             months.append({"label": month_dt.strftime("%Y-%m"), "revenue": 0, "expenses": 0})
-        for inv in invoices:
+        for inv in cinv:
             try:
                 d = inv.get("date", "")
                 label = d[:7]

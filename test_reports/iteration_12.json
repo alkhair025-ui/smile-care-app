@@ -1,0 +1,40 @@
+{
+  "summary": "Iteration 12 — Dashboard multi-currency selector — verified end-to-end on doctor@demo.com. Backend suite /app/backend/tests/test_iteration12_dashboard_currency.py runs 8 tests — ALL PASS (100%). Confirmed: (1) GET /api/reports/summary returns currencies=['SYP','USD'] (SYP first, USD next), default currency='SYP' (first available). (2) All required aggregate keys present: revenue, purchases, salaries, expenses, net_profit, today_income, monthly (6 buckets). (3) ?currency=USD returns {revenue:300, purchases:0, salaries:0, expenses:0, net_profit:300, today_income:0}. (4) ?currency=SYP returns {revenue:50, purchases:150, salaries:500, expenses:80, net_profit:-680, today_income:0}. (5) net_profit invariant holds per-currency (revenue-purchases-salaries-expenses). (6) USD vs SYP aggregates differ → NO currency mixing. (7) Invalid ?currency=XYZ falls back to first available (SYP). (8) today_income ≤ revenue per selected currency. Frontend Playwright at 390x844: doctor@demo.com login → /(tabs)/dashboard. testID 'dash-currency' visible on top of الملخّص المالي with initial label 'عرض بعملة: ليرة سورية (ل.س)'. Tapping opens modal rendering EXACTLY the two currencies actually present: dash-cur-SYP and dash-cur-USD (no extra currency options). SYP-view body shows exactly the SYP figures 50/150/500/80/-680 with symbol 'ل.س' (7 occurrences) — screenshot verified. Switching to USD flips label to 'عرض بعملة: دولار أمريكي ($)' and all cards to 300/0/0/0/300 with '$' symbol (9 occurrences); crucially '680' does NOT appear in the USD view → no cross-currency leakage. AsyncStorage persistence: after selecting USD, localStorage.dashboard_currency=='USD' (react-native-async-storage/async-storage maps to localStorage on web); navigating away to /more tab and back keeps the selector on USD and revenue=300 → preference survives navigation. Test cleaned up by restoring SYP as final state. Backend previously tested manually by main agent gave identical numbers, our automated pytest confirms them. Frontend UI is fully functional and integration with backend is correct. No red screen, no new console errors — only pre-existing shadow*/pointerEvents deprecation warnings and unrelated static asset 404s carried over from prior iterations.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "StyleSheet shadow.card", "issue": "Pre-existing react-native-web deprecation warning: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' Not touched by this iteration. Reference: /app/frontend/src/theme.ts"},
+      {"component": "Feather / dash-currency Pressable", "issue": "Pre-existing warning: 'props.pointerEvents is deprecated. Use style.pointerEvents' — comes from @expo/vector-icons / react-native-web internals, not from dashboard code. Non-blocking."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration12_dashboard_currency.py",
+    "/app/test_reports/pytest/pytest_iteration12.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py:1119-1130 — currencies list is built from `{i['currency'] or 'SYP' for i in invoices}` with sort key (c!='SYP', c!='USD', c) → guarantees SYP first, USD next, then alpha. `cinv = [i for i in invoices if (i.get('currency') or 'SYP') == cur]` correctly narrows aggregation to a single currency; there is no addition across buckets. Good.",
+    "server.py:1125 — When ?currency is missing or invalid, fallback is currencies[0] (SYP when present). Deterministic and safe.",
+    "server.py:1148-1166 — Monthly breakdown iterates only `cinv` (already filtered), so the 6-month chart is also currency-scoped. Correct.",
+    "server.py:1122-1123 — When invoices=[], currencies defaults to ['SYP']. Safe for empty accounts (avoids IndexError on currencies[0]).",
+    "dashboard.tsx:14 — money() always calls curSymbol(cur) with the selected currency, never a hardcoded 'ل.س'. All FinTile/DailyTile/profitBox values pass through m(...) with the same cur, so no possibility of mixed rendering.",
+    "dashboard.tsx:128 — Currency selector is only shown when showFin && currencies.length > 0 → correctly hidden for assistants who cannot see financials or when no currency exists.",
+    "dashboard.tsx:109 — Displayed cur = data?.currency (server-echoed) || currency (local) || 'SYP'. Using the server-echoed value ensures that after an invalid fallback the UI stays in sync with what the backend actually aggregated.",
+    "dashboard.tsx:98-102 — changeCurrency writes to AsyncStorage AND sets local state; useEffect on mount reads from AsyncStorage BEFORE the first load, and load() depends on `currency`, so the very first request already uses the persisted currency. Correct ordering (no stale first-render request).",
+    "api.ts:159 — summary(currency?) properly URI-encodes the currency; omits the ?currency= param entirely when undefined, so backend applies its default. Good."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration12_dashboard_currency.py",
+    "/app/test_reports/iteration_12.json",
+    "/app/test_reports/pytest/pytest_iteration12.xml"
+  ],
+  "success_rate": {"backend": "100% (8/8 passed)", "frontend": "100% (currency selector, per-currency card rendering, no-mixing, AsyncStorage persistence across navigation all verified)"},
+  "seed_data_creation": "None. Tests are read-only against /api/reports/summary. Demo doctor's data untouched. Frontend test toggled selection to USD then restored to SYP (clean final state).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run: pytest /app/backend/tests/test_iteration12_dashboard_currency.py -v. Frontend reproduction: login doctor@demo.com/demo1234 → dashboard → testIDs dash-currency (top of financial summary), dash-cur-SYP / dash-cur-USD (inside modal). AsyncStorage web key is 'dashboard_currency' in localStorage. Known invoice totals for demo doctor: SYP{revenue=50, purchases=150, salaries=500, expenses=80, net=-680}, USD{revenue=300, purchases=0, salaries=0, expenses=0, net=300}. Feature is fully working; no known bugs.",
+  "rca_of_issue": "N/A — no bugs found in this iteration."
+}

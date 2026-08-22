@@ -156,7 +156,7 @@ export const api = {
   updateLab: (id: string, data: any) => request<any>(`/lab-orders/${id}`, { method: 'PATCH', body: data }),
   deleteLab: (id: string) => request(`/lab-orders/${id}`, { method: 'DELETE' }),
 
-  summary: () => request<any>('/reports/summary'),
+  summary: (currency?: string) => request<any>(`/reports/summary${currency ? `?currency=${encodeURIComponent(currency)}` : ''}`),
   profitReport: (period: string, year?: number) =>
     request<any>(`/reports/profit?period=${period}${year ? `&year=${year}` : ''}`),
 };
