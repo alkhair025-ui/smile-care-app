@@ -12,10 +12,16 @@ import { sharePortalViaWhatsApp } from '@/src/portal-share';
 import { buildTreatmentMaps, toothTextColor, TreatmentType } from '@/src/treatment';
 import { money } from '@/src/currencies';
 
-const UP_RIGHT = [18, 17, 16, 15, 14, 13, 12, 11];
-const UP_LEFT = [21, 22, 23, 24, 25, 26, 27, 28];
-const LO_LEFT = [31, 32, 33, 34, 35, 36, 37, 38];
-const LO_RIGHT = [48, 47, 46, 45, 44, 43, 42, 41];
+const Q1 = [11, 12, 13, 14, 15, 16, 17, 18]; // علوي أيمن
+const Q2 = [21, 22, 23, 24, 25, 26, 27, 28]; // علوي أيسر
+const Q3 = [31, 32, 33, 34, 35, 36, 37, 38]; // سفلي أيسر
+const Q4 = [41, 42, 43, 44, 45, 46, 47, 48]; // سفلي أيمن
+const QUADRANTS = [
+  { key: 'Q1', label: 'الربع الأول · علوي أيمن', teeth: Q1 },
+  { key: 'Q2', label: 'الربع الثاني · علوي أيسر', teeth: Q2 },
+  { key: 'Q4', label: 'الربع الرابع · سفلي أيمن', teeth: Q4 },
+  { key: 'Q3', label: 'الربع الثالث · سفلي أيسر', teeth: Q3 },
+];
 
 export default function PatientDetail() {
   const router = useRouter();
@@ -26,7 +32,7 @@ export default function PatientDetail() {
   const [invoices, setInvoices] = useState<any[]>([]);
   const [clinic, setClinic] = useState<any>({});
   const [loading, setLoading] = useState(true);
-  const [selectedTooth, setSelectedTooth] = useState<number | null>(null);
+  const [activeCondition, setActiveCondition] = useState<string>('healthy');
   const [uploading, setUploading] = useState(false);
   const [xrayUrls, setXrayUrls] = useState<Record<string, string>>({});
   const [xrayError, setXrayError] = useState('');
@@ -78,12 +84,9 @@ export default function PatientDetail() {
     finally { setAddingType(false); }
   };
 
-  const setCondition = async (cond: string) => {
-    if (selectedTooth == null) return;
-    const tooth = selectedTooth;
-    setSelectedTooth(null);
+  const applyToTooth = async (tooth: number) => {
     try {
-      const updated = await api.setTooth(id!, { tooth, condition: cond, note: chart[tooth]?.note || '' });
+      const updated = await api.setTooth(id!, { tooth, condition: activeCondition, note: chart[tooth]?.note || '' });
       setChart((c) => ({ ...c, [tooth]: updated }));
     } catch (e: any) {
       console.warn('setTooth error', e?.message);
@@ -202,11 +205,30 @@ export default function PatientDetail() {
 
         {/* Dental chart */}
         <SectionCard icon="grid" title="مخطط الأسنان (FDI)">
-          <Text style={styles.arcLabel}>الفك العلوي</Text>
-          <View style={styles.arch}>{[...UP_RIGHT, ...UP_LEFT].map((n) => <Tooth key={n} n={n} chart={chart} onSelect={setSelectedTooth} colorMap={colorMap} />)}</View>
-          <View style={styles.midDivider} />
-          <View style={styles.arch}>{[...LO_LEFT.slice().reverse(), ...LO_RIGHT.slice().reverse()].map((n) => <Tooth key={n} n={n} chart={chart} onSelect={setSelectedTooth} colorMap={colorMap} />)}</View>
-          <Text style={styles.arcLabel}>الفك السفلي</Text>
+          <Text style={styles.paletteHint}>اختر نوع المعالجة ثم اضغط على السن لتطبيقه</Text>
+          <View style={styles.paletteWrap}>
+            {conditions.map((c) => {
+              const active = activeCondition === c;
+              return (
+                <Pressable key={c} testID={`palette-${c}`} onPress={() => setActiveCondition(c)} style={[styles.paletteChip, active && styles.paletteChipActive]}>
+                  <View style={[styles.condDot, { backgroundColor: colorMap[c], borderColor: c === 'healthy' ? colors.border : colorMap[c] }]} />
+                  <Text style={[styles.paletteText, active && { color: '#fff' }]}>{labelMap[c]}</Text>
+                </Pressable>
+              );
+            })}
+            <Pressable testID="add-treatment-type" onPress={() => setAddTypeOpen(true)} style={[styles.paletteChip, styles.addTypeChip]}>
+              <Feather name="plus-circle" size={16} color={colors.brand} />
+              <Text style={[styles.paletteText, { color: colors.brand }]}>نوع جديد</Text>
+            </Pressable>
+          </View>
+
+          {QUADRANTS.map((q) => (
+            <View key={q.key} style={styles.quadrant}>
+              <Text style={styles.quadLabel}>{q.label}</Text>
+              <View style={styles.arch}>{q.teeth.map((n) => <Tooth key={n} n={n} chart={chart} onApply={applyToTooth} colorMap={colorMap} />)}</View>
+            </View>
+          ))}
+
           <View style={styles.legendWrap}>
             {conditions.map((k) => (
               <View key={k} style={styles.legendItem}>
@@ -262,26 +284,6 @@ export default function PatientDetail() {
         </SectionCard>
       </ScrollView>
 
-      <Modal visible={selectedTooth != null} transparent animationType="fade" onRequestClose={() => setSelectedTooth(null)}>
-        <Pressable style={styles.sheetOverlay} onPress={() => setSelectedTooth(null)}>
-          <View style={styles.sheet}>
-            <Text style={styles.sheetTitle}>السن رقم {selectedTooth}</Text>
-            <View style={styles.condGrid}>
-              {conditions.map((c) => (
-                <Pressable key={c} testID={`cond-${c}`} onPress={() => setCondition(c)} style={styles.condChip}>
-                  <View style={[styles.condDot, { backgroundColor: colorMap[c] }]} />
-                  <Text style={styles.condText}>{labelMap[c]}</Text>
-                </Pressable>
-              ))}
-              <Pressable testID="add-treatment-type" onPress={() => { setSelectedTooth(null); setAddTypeOpen(true); }} style={[styles.condChip, styles.addTypeChip]}>
-                <Feather name="plus-circle" size={16} color={colors.brand} />
-                <Text style={[styles.condText, { color: colors.brand }]}>نوع جديد</Text>
-              </Pressable>
-            </View>
-          </View>
-        </Pressable>
-      </Modal>
-
       <Modal visible={addTypeOpen} transparent animationType="fade" onRequestClose={() => setAddTypeOpen(false)}>
         <Pressable style={styles.sheetOverlay} onPress={() => setAddTypeOpen(false)}>
           <Pressable style={styles.addSheet} onPress={() => {}}>
@@ -311,12 +313,12 @@ export default function PatientDetail() {
   );
 }
 
-function Tooth({ n, chart, onSelect, colorMap }: { n: number; chart: any; onSelect: (n: number) => void; colorMap: Record<string, string> }) {
+function Tooth({ n, chart, onApply, colorMap }: { n: number; chart: any; onApply: (n: number) => void; colorMap: Record<string, string> }) {
   const st = chart[n];
   const bg = st ? (colorMap[st.condition] || '#fff') : '#fff';
   const textColor = st ? toothTextColor(st.condition, bg) : colors.onSurface;
   return (
-    <Pressable testID={`tooth-${n}`} onPress={() => onSelect(n)} style={[styles.tooth, { backgroundColor: bg }]}>
+    <Pressable testID={`tooth-${n}`} onPress={() => onApply(n)} style={[styles.tooth, { backgroundColor: bg }]}>
       <Text style={[styles.toothNum, { color: textColor }]}>{n}</Text>
     </Pressable>
   );
@@ -351,6 +353,13 @@ const styles = StyleSheet.create({
   savePillText: { color: '#fff', fontFamily: fontFamily.bold },
   arcLabel: { textAlign: 'center', color: colors.muted, fontFamily: fontFamily.medium, marginVertical: spacing.sm },
   arch: { flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 4, justifyContent: 'center' },
+  paletteHint: { color: colors.muted, fontFamily: fontFamily.regular, fontSize: font.sm, textAlign: 'right', writingDirection: 'rtl', marginBottom: spacing.sm },
+  paletteWrap: { flexDirection: 'row-reverse', flexWrap: 'wrap', gap: spacing.sm, marginBottom: spacing.lg },
+  paletteChip: { flexDirection: 'row-reverse', alignItems: 'center', gap: 6, backgroundColor: colors.surfaceSecondary, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.border },
+  paletteChipActive: { backgroundColor: colors.brand, borderColor: colors.brand },
+  paletteText: { fontFamily: fontFamily.bold, color: colors.onSurface, fontSize: font.sm },
+  quadrant: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.sm },
+  quadLabel: { color: colors.onSurfaceSecondary, fontFamily: fontFamily.bold, fontSize: font.sm, textAlign: 'center', marginBottom: spacing.sm },
   midDivider: { height: 1, backgroundColor: colors.border, marginVertical: spacing.md },
   tooth: { width: 32, height: 40, borderRadius: 6, borderWidth: 1, borderColor: colors.borderStrong, alignItems: 'center', justifyContent: 'center' },
   toothNum: { fontSize: 10, fontFamily: fontFamily.bold },
