@@ -8,6 +8,16 @@ import { api } from '@/src/api';
 
 function toDateKey(iso: string) { return (iso || '').slice(0, 10); }
 
+// "HH:MM" (24h) → Arabic 12-hour label, e.g. "1:00 ظهراً", "2:30 مساءً".
+function to12h(hhmm: string) {
+  const [hStr, mStr] = (hhmm || '').split(':');
+  const h = parseInt(hStr, 10);
+  if (isNaN(h)) return hhmm;
+  const period = h < 12 ? 'صباحاً' : (h < 14 ? 'ظهراً' : 'مساءً');
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${mStr} ${period}`;
+}
+
 export default function Appointments() {
   const router = useRouter();
   const [items, setItems] = useState<any[]>([]);
@@ -41,7 +51,7 @@ export default function Appointments() {
   const confirmAndNotify = async (a: any) => {
     await setStatus(a, 'confirmed');
     const phone = (phones[a.patient_id] || '').replace(/[^\d]/g, '');
-    const msg = encodeURIComponent(`مرحباً ${a.patient_name}، تم تأكيد موعدك في ${clinicName} بتاريخ ${toDateKey(a.date)} الساعة ${a.date.slice(11, 16)}. نراكم قريباً!`);
+    const msg = encodeURIComponent(`مرحباً ${a.patient_name}، تم تأكيد موعدك في ${clinicName} بتاريخ ${toDateKey(a.date)} الساعة ${to12h(a.date.slice(11, 16))}. نراكم قريباً!`);
     Linking.openURL(phone ? `https://wa.me/${phone}?text=${msg}` : `https://wa.me/?text=${msg}`).catch(() => {});
   };
 
@@ -85,7 +95,7 @@ export default function Appointments() {
                     )}
                   </View>
                   <View style={styles.statusChips}>
-                    <Chip label="مؤكد" active={a.status === 'confirmed'} onPress={() => setStatus(a, 'confirmed')} color={colors.success} tid={`appt-confirm-${a.id}`} />
+                    <Chip label="مؤكد" active={a.status === 'confirmed'} onPress={() => confirmAndNotify(a)} color={colors.success} tid={`appt-confirm-${a.id}`} />
                     <Chip label="مكتمل" active={a.status === 'completed'} onPress={() => setStatus(a, 'completed')} color={colors.brand} tid={`appt-complete-${a.id}`} />
                     <Chip label="ملغي" active={a.status === 'cancelled'} onPress={() => setStatus(a, 'cancelled')} color={colors.error} tid={`appt-cancel-${a.id}`} />
                   </View>
