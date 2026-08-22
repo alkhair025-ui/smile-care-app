@@ -815,8 +815,9 @@ async def get_public_file(file_id: str):
 
 # ------------------------ Public booking portal ------------------------
 
-WORK_START_HOUR = 9
-WORK_END_HOUR = 17
+WORK_START_HOUR = 8
+WORK_END_HOUR = 23  # clinic closes 11 PM; last 30-min slot starts 22:30, ends 23:00
+LAST_SLOT = "22:30"
 SLOT_MINUTES = 30
 
 @api_router.get("/public/patient/{token}")
@@ -869,9 +870,19 @@ async def public_clinic(tenant_id: str):
         "clinic_location": t.get("clinic_location"),
     }
 
+def _valid_slots() -> set:
+    s = set()
+    for h in range(WORK_START_HOUR, WORK_END_HOUR + 1):
+        for m in (0, SLOT_MINUTES):
+            hhmm = f"{h:02d}:{m:02d}"
+            if hhmm > LAST_SLOT:
+                continue
+            s.add(hhmm)
+    return s
+
 @api_router.get("/public/clinic/{tenant_id}/slots")
 async def public_slots(tenant_id: str, date: str):
-    """date = YYYY-MM-DD. Returns available HH:MM slots (09:00-17:00, 30-min) minus booked."""
+    """date = YYYY-MM-DD. Returns available HH:MM slots (08:00-22:30, 30-min) minus booked."""
     t = await db.tenants.find_one({"tenant_id": tenant_id})
     if not t:
         raise HTTPException(404, "العيادة غير موجودة")
@@ -881,11 +892,7 @@ async def public_slots(tenant_id: str, date: str):
         "status": {"$ne": "cancelled"},
     }).to_list(200)
     taken = {a["date"][11:16] for a in booked}
-    slots = []
-    for h in range(WORK_START_HOUR, WORK_END_HOUR):
-        for m in (0, SLOT_MINUTES):
-            hhmm = f"{h:02d}:{m:02d}"
-            slots.append({"time": hhmm, "available": hhmm not in taken})
+    slots = [{"time": hhmm, "available": hhmm not in taken} for hhmm in sorted(_valid_slots())]
     return {"date": date, "slots": slots}
 
 class PublicBookingIn(BaseModel):
@@ -900,6 +907,8 @@ async def public_book(tenant_id: str, data: PublicBookingIn):
     t = await db.tenants.find_one({"tenant_id": tenant_id})
     if not t:
         raise HTTPException(404, "العيادة غير موجودة")
+    if data.time not in _valid_slots():
+        raise HTTPException(400, "الوقت المختار غير متاح ضمن ساعات العمل")
     iso = f"{data.date}T{data.time}:00"
     # prevent double booking
     clash = await db.appointments.find_one({
