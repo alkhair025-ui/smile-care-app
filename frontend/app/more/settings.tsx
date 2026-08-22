@@ -87,6 +87,8 @@ export default function Settings() {
           <Field label="اسم العيادة" val={settings.clinic_name} onSave={(v) => save({ clinic_name: v })} editable={isDoctor} tid="s-clinic-name" />
           <Field label="العنوان" val={settings.clinic_address} onSave={(v) => save({ clinic_address: v })} editable={isDoctor} tid="s-clinic-address" />
           <Field label="الهاتف" val={settings.clinic_phone} onSave={(v) => save({ clinic_phone: v })} editable={isDoctor} tid="s-clinic-phone" />
+          <Field label="أوقات الدوام" val={settings.working_hours} onSave={(v) => save({ working_hours: v })} editable={isDoctor} tid="s-working-hours" />
+          {isDoctor ? <Text style={styles.rowHelp}>مثال: السبت - الخميس، 8 صباحاً - 11 مساءً. تظهر للمرضى في صفحة الحجز.</Text> : null}
         </View>
 
         {/* Location */}

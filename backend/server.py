@@ -7,6 +7,7 @@ import uuid
 import logging
 import secrets
 import hashlib
+import colorsys
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Literal, Annotated
@@ -105,6 +106,7 @@ class SettingsUpdate(BaseModel):
     clinic_address: Optional[str] = None
     clinic_phone: Optional[str] = None
     clinic_location: Optional[dict] = None  # {lat, lng}
+    working_hours: Optional[str] = None
 
 class PatientIn(BaseModel):
     full_name: str
@@ -459,6 +461,7 @@ async def register(data: RegisterIn):
     if await db.users.find_one({"email": email}):
         raise HTTPException(409, "البريد الإلكتروني مسجل مسبقاً")
     tenant_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
     user_doc = {
         "email": email,
         "password_hash": hash_password(data.password),
@@ -466,7 +469,17 @@ async def register(data: RegisterIn):
         "tenant_id": tenant_id,
         "role": "doctor",
         "disabled": False,
-        "created_at": datetime.now(timezone.utc),
+        "created_at": now,
+        # New signups start on a free trial automatically, with no expiry until the
+        # super admin manually converts them to a paid subscription.
+        "sub_status": "trial",
+        "sub_plan": "",
+        "sub_start": now.isoformat(),
+        "sub_end": None,
+        "sub_history": [{
+            "status": "trial", "plan": "", "start": now.isoformat(), "end": None,
+            "at": now.isoformat(), "by": "تسجيل تلقائي", "auto": True,
+        }],
     }
     r = await db.users.insert_one(user_doc)
     user_doc["_id"] = r.inserted_id
@@ -485,6 +498,8 @@ async def login(data: LoginIn):
     user = await db.users.find_one({"email": data.email.lower()})
     if not user or not verify_password(data.password, user["password_hash"]):
         raise HTTPException(401, "بريد أو كلمة مرور غير صحيحة")
+    if user.get("role") == "doctor":
+        user = await _apply_subscription(user)
     if user.get("disabled"):
         raise HTTPException(403, "تم تعطيل هذا الحساب. يرجى التواصل مع الإدارة.")
     tenant = await get_tenant(user["tenant_id"])
@@ -617,6 +632,77 @@ async def set_tooth(pid: str, data: ToothStateIn, user: dict = Depends(get_curre
     )
     doc = await db.tooth_charts.find_one({"patient_id": pid, "tenant_id": user["tenant_id"], "tooth": data.tooth})
     return _clean(doc)
+
+# ------------------------ Treatment Types (custom, per-tenant) ------------------------
+
+# Built-in tooth-condition colors (mirror of frontend theme.ts). Custom colors must
+# stay clearly distinct from these AND from each other.
+BUILTIN_TOOTH_COLORS = [
+    "#FFFFFF", "#A84A42", "#4A7065", "#B58548",
+    "#6B7876", "#B0C4BC", "#8B5CF6", "#334F46",
+]
+
+def _hex_to_rgb(h: str):
+    h = h.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+def _rgb_to_hex(r: int, g: int, b: int) -> str:
+    return "#{:02X}{:02X}{:02X}".format(int(r), int(g), int(b))
+
+def _color_distance(c1, c2) -> float:
+    return sum((a - b) ** 2 for a, b in zip(c1, c2)) ** 0.5
+
+def generate_distinct_color(used_hex: list) -> str:
+    """Pick a vivid color whose distance to every used color is maximal.
+
+    Sweeps the full hue circle at fixed saturation/lightness and returns the
+    candidate that is furthest (in RGB space) from all previously used colors,
+    guaranteeing no repeat or near-duplicate with existing treatment colors.
+    """
+    used_rgb = []
+    for hx in used_hex:
+        try:
+            used_rgb.append(_hex_to_rgb(hx))
+        except Exception:
+            continue
+    best_hex, best_score = None, -1.0
+    for deg in range(0, 360, 3):
+        r, g, b = colorsys.hls_to_rgb(deg / 360.0, 0.47, 0.62)
+        cand_rgb = (round(r * 255), round(g * 255), round(b * 255))
+        score = min((_color_distance(cand_rgb, u) for u in used_rgb), default=1e9)
+        if score > best_score:
+            best_score, best_hex = score, _rgb_to_hex(*cand_rgb)
+    return best_hex or "#4A7065"
+
+class TreatmentTypeIn(BaseModel):
+    label: str
+
+@api_router.get("/treatment-types")
+async def list_treatment_types(user: dict = Depends(get_current_user)):
+    tenant = await get_tenant(user["tenant_id"])
+    return (tenant or {}).get("treatment_types", [])
+
+@api_router.post("/treatment-types")
+async def create_treatment_type(data: TreatmentTypeIn, doctor: dict = Depends(require_role("doctor"))):
+    label = data.label.strip()
+    if not label:
+        raise HTTPException(400, "يرجى إدخال اسم نوع المعالجة")
+    tenant = await get_tenant(doctor["tenant_id"])
+    existing = (tenant or {}).get("treatment_types", [])
+    if any((t.get("label", "").strip() == label) for t in existing):
+        raise HTTPException(409, "نوع المعالجة موجود مسبقاً")
+    used = BUILTIN_TOOTH_COLORS + [t.get("color") for t in existing if t.get("color")]
+    new_type = {
+        "key": f"ct_{uuid.uuid4().hex[:8]}",
+        "label": label,
+        "color": generate_distinct_color(used),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.tenants.update_one(
+        {"tenant_id": doctor["tenant_id"]},
+        {"$push": {"treatment_types": new_type}},
+    )
+    return new_type
 
 # ------------------------ X-Rays ------------------------
 
@@ -815,8 +901,9 @@ async def get_public_file(file_id: str):
 
 # ------------------------ Public booking portal ------------------------
 
-WORK_START_HOUR = 9
-WORK_END_HOUR = 17
+WORK_START_HOUR = 8
+WORK_END_HOUR = 23  # clinic closes 11 PM; last 30-min slot starts 22:30, ends 23:00
+LAST_SLOT = "22:30"
 SLOT_MINUTES = 30
 
 @api_router.get("/public/patient/{token}")
@@ -844,6 +931,7 @@ async def public_patient_portal(token: str):
             "doctor_notes": p.get("doctor_notes", ""),
         },
         "chart": [{"tooth": c["tooth"], "condition": c["condition"], "note": c.get("note", "")} for c in charts],
+        "treatment_types": tenant.get("treatment_types", []),
         "invoices": [{
             "id": i["id"], "date": i.get("date", ""), "items": i.get("items", []),
             "total": i.get("total", 0), "paid": i.get("paid", 0),
@@ -867,11 +955,22 @@ async def public_clinic(tenant_id: str):
         "clinic_address": t.get("clinic_address", ""),
         "clinic_phone": t.get("clinic_phone", ""),
         "clinic_location": t.get("clinic_location"),
+        "working_hours": t.get("working_hours", ""),
     }
+
+def _valid_slots() -> set:
+    s = set()
+    for h in range(WORK_START_HOUR, WORK_END_HOUR + 1):
+        for m in (0, SLOT_MINUTES):
+            hhmm = f"{h:02d}:{m:02d}"
+            if hhmm > LAST_SLOT:
+                continue
+            s.add(hhmm)
+    return s
 
 @api_router.get("/public/clinic/{tenant_id}/slots")
 async def public_slots(tenant_id: str, date: str):
-    """date = YYYY-MM-DD. Returns available HH:MM slots (09:00-17:00, 30-min) minus booked."""
+    """date = YYYY-MM-DD. Returns available HH:MM slots (08:00-22:30, 30-min) minus booked."""
     t = await db.tenants.find_one({"tenant_id": tenant_id})
     if not t:
         raise HTTPException(404, "العيادة غير موجودة")
@@ -881,11 +980,7 @@ async def public_slots(tenant_id: str, date: str):
         "status": {"$ne": "cancelled"},
     }).to_list(200)
     taken = {a["date"][11:16] for a in booked}
-    slots = []
-    for h in range(WORK_START_HOUR, WORK_END_HOUR):
-        for m in (0, SLOT_MINUTES):
-            hhmm = f"{h:02d}:{m:02d}"
-            slots.append({"time": hhmm, "available": hhmm not in taken})
+    slots = [{"time": hhmm, "available": hhmm not in taken} for hhmm in sorted(_valid_slots())]
     return {"date": date, "slots": slots}
 
 class PublicBookingIn(BaseModel):
@@ -900,6 +995,8 @@ async def public_book(tenant_id: str, data: PublicBookingIn):
     t = await db.tenants.find_one({"tenant_id": tenant_id})
     if not t:
         raise HTTPException(404, "العيادة غير موجودة")
+    if data.time not in _valid_slots():
+        raise HTTPException(400, "الوقت المختار غير متاح ضمن ساعات العمل")
     iso = f"{data.date}T{data.time}:00"
     # prevent double booking
     clash = await db.appointments.find_one({
@@ -1006,6 +1103,16 @@ async def summary(user: dict = Depends(get_current_user)):
         "financials_visible": financials_visible,
     }
 
+    if user.get("role") == "doctor":
+        d_left = _sub_days_left(user) if user.get("sub_status") == "subscribed" else None
+        result["subscription"] = {
+            "status": user.get("sub_status", "trial"),
+            "plan": user.get("sub_plan", ""),
+            "end": user.get("sub_end"),
+            "days_left": d_left,
+            "expiring_soon": (d_left is not None and 0 <= d_left <= SUB_ALERT_DAYS),
+        }
+
     if financials_visible:
         invoices = await db.invoices.find({"tenant_id": tenant_id}).to_list(5000)
         revenue = sum(i.get("total", 0) for i in invoices if i.get("kind") == "patient")
@@ -1051,6 +1158,62 @@ async def summary(user: dict = Depends(get_current_user)):
     })
     result["low_stock_count"] = low_stock
     return result
+
+@api_router.get("/reports/profit")
+async def profit_report(period: str = "monthly", year: int = 0, user: dict = Depends(get_current_user)):
+    """Profit report for a period: daily / weekly / monthly / yearly.
+    Groups revenue, expenses and net profit per currency to avoid mixing currencies.
+    For 'yearly', an explicit `year` (>= 2026) selects the calendar year.
+    """
+    if not await can_view_financials(user):
+        return {"financials_visible": False}
+
+    now = datetime.now()
+    cur_year = now.year
+    if period == "daily":
+        prefix = now.strftime("%Y-%m-%d")
+        label = "اليوم"
+        in_range = lambda d: d[:10] == prefix
+    elif period == "weekly":
+        start = (now - timedelta(days=6)).strftime("%Y-%m-%d")
+        end = now.strftime("%Y-%m-%d")
+        label = "آخر 7 أيام"
+        in_range = lambda d: start <= d[:10] <= end
+    elif period == "yearly":
+        y = year if year and year >= 2026 else cur_year
+        prefix = str(y)
+        label = f"سنة {y}"
+        in_range = lambda d: d[:4] == prefix
+    else:  # monthly (default)
+        prefix = now.strftime("%Y-%m")
+        label = "هذا الشهر"
+        in_range = lambda d: d[:7] == prefix
+
+    invoices = await db.invoices.find({"tenant_id": user["tenant_id"]}).to_list(5000)
+    groups: dict = {}
+    for inv in invoices:
+        d = str(inv.get("date", ""))
+        if not d or not in_range(d):
+            continue
+        cur = inv.get("currency", "SYP") or "SYP"
+        g = groups.setdefault(cur, {"currency": cur, "revenue": 0, "expenses": 0})
+        if inv.get("kind") == "patient":
+            g["revenue"] += inv.get("total", 0)
+        else:
+            g["expenses"] += inv.get("total", 0)
+    by_currency = []
+    for g in groups.values():
+        g["net"] = g["revenue"] - g["expenses"]
+        by_currency.append(g)
+    by_currency.sort(key=lambda g: g["currency"] != "SYP")  # SYP first
+    return {
+        "financials_visible": True,
+        "period": period,
+        "year": year if period == "yearly" else None,
+        "label": label,
+        "by_currency": by_currency,
+    }
+
 
 # ------------------------ Email (standard SMTP) ------------------------
 
@@ -1156,13 +1319,58 @@ async def reset_password(data: ResetIn):
 class AdminResetIn(BaseModel):
     new_password: str = Field(min_length=6, max_length=72)
 
+class SubscriptionIn(BaseModel):
+    status: Literal["trial", "subscribed", "disabled"]
+    plan: Optional[Literal["monthly", "quarterly", "semiannual", "annual"]] = None
+
+PLAN_DAYS = {"monthly": 30, "quarterly": 91, "semiannual": 182, "annual": 365}
+SUB_ALERT_DAYS = 14  # notify doctor + admin two weeks before expiry
+
+def _sub_days_left(u: dict):
+    end = u.get("sub_end")
+    if not end:
+        return None
+    try:
+        end_dt = datetime.fromisoformat(end)
+    except Exception:
+        return None
+    if end_dt.tzinfo is None:
+        end_dt = end_dt.replace(tzinfo=timezone.utc)
+    return (end_dt - datetime.now(timezone.utc)).days
+
+async def _apply_subscription(u: dict) -> dict:
+    """Lazily auto-disable a paid subscription that has passed its end date.
+    Runs on login and whenever the admin lists doctors, so no scheduler is needed."""
+    if u.get("sub_status") == "subscribed" and u.get("sub_end"):
+        try:
+            end_dt = datetime.fromisoformat(u["sub_end"])
+            if end_dt.tzinfo is None:
+                end_dt = end_dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            return u
+        if end_dt < datetime.now(timezone.utc):
+            now_iso = datetime.now(timezone.utc).isoformat()
+            entry = {"status": "disabled", "plan": u.get("sub_plan", ""), "start": u.get("sub_start"),
+                     "end": u.get("sub_end"), "at": now_iso, "by": "النظام", "auto": True,
+                     "note": "تعطيل تلقائي عند انتهاء الاشتراك"}
+            await db.users.update_one({"_id": u["_id"]}, {
+                "$set": {"sub_status": "disabled", "disabled": True, "auto_disabled_at": now_iso},
+                "$push": {"sub_history": entry},
+            })
+            u["sub_status"] = "disabled"; u["disabled"] = True; u["auto_disabled_at"] = now_iso
+    return u
+
 @api_router.get("/admin/doctors")
 async def admin_list_doctors(admin: dict = Depends(require_role("super_admin"))):
     users = await db.users.find({"role": {"$in": ["doctor", "assistant"]}}).sort("created_at", -1).to_list(1000)
     out = []
     for u in users:
+        if u.get("role") == "doctor":
+            u = await _apply_subscription(u)
         tenant = await get_tenant(u["tenant_id"])
         patients = await db.patients.count_documents({"tenant_id": u["tenant_id"]})
+        sub_status = u.get("sub_status", "trial") if u.get("role") == "doctor" else None
+        days_left = _sub_days_left(u) if sub_status == "subscribed" else None
         out.append({
             "id": str(u["_id"]),
             "email": u["email"],
@@ -1170,11 +1378,51 @@ async def admin_list_doctors(admin: dict = Depends(require_role("super_admin")))
             "role": u["role"],
             "tenant_id": u["tenant_id"],
             "clinic_name": tenant.get("clinic_name", ""),
+            "clinic_phone": tenant.get("clinic_phone", ""),
             "disabled": u.get("disabled", False),
             "patients_count": patients,
             "created_at": u["created_at"].isoformat() if isinstance(u.get("created_at"), datetime) else u.get("created_at"),
+            "sub_status": sub_status,
+            "sub_plan": u.get("sub_plan", "") if u.get("role") == "doctor" else "",
+            "sub_start": u.get("sub_start") if u.get("role") == "doctor" else None,
+            "sub_end": u.get("sub_end") if u.get("role") == "doctor" else None,
+            "days_left": days_left,
+            "expiring_soon": (days_left is not None and 0 <= days_left <= SUB_ALERT_DAYS),
+            "auto_disabled": bool(u.get("auto_disabled_at")) if u.get("role") == "doctor" else False,
+            "sub_history": list(reversed(u.get("sub_history", []))) if u.get("role") == "doctor" else [],
         })
     return out
+
+@api_router.post("/admin/users/{user_id}/subscription")
+async def admin_set_subscription(user_id: str, data: SubscriptionIn, admin: dict = Depends(require_role("super_admin"))):
+    target = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not target or target.get("role") != "doctor":
+        raise HTTPException(404, "الطبيب غير موجود")
+    now = datetime.now(timezone.utc)
+    update: dict = {"sub_status": data.status, "auto_disabled_at": None}
+    if data.status == "subscribed":
+        if not data.plan:
+            raise HTTPException(400, "يرجى تحديد نوع الاشتراك")
+        update["sub_plan"] = data.plan
+        update["sub_start"] = now.isoformat()
+        update["sub_end"] = (now + timedelta(days=PLAN_DAYS[data.plan])).isoformat()
+        update["disabled"] = False
+    elif data.status == "trial":
+        update["sub_plan"] = ""
+        update["sub_start"] = now.isoformat()
+        update["sub_end"] = None
+        update["disabled"] = False
+    else:  # disabled (manual)
+        update["disabled"] = True
+    await db.users.update_one({"_id": ObjectId(user_id)}, {"$set": update})
+    entry = {
+        "status": data.status, "plan": update.get("sub_plan", ""),
+        "start": update.get("sub_start"), "end": update.get("sub_end"),
+        "at": now.isoformat(), "by": admin.get("full_name") or admin.get("email") or "المدير العام",
+        "auto": False,
+    }
+    await db.users.update_one({"_id": ObjectId(user_id)}, {"$push": {"sub_history": entry}})
+    return {"ok": True, "sub_status": data.status, "sub_end": update.get("sub_end")}
 
 @api_router.post("/admin/users/{user_id}/reset-password")
 async def admin_reset_password(user_id: str, data: AdminResetIn, admin: dict = Depends(require_role("super_admin"))):
@@ -1199,7 +1447,11 @@ async def admin_stats(admin: dict = Depends(require_role("super_admin"))):
     assistants = await db.users.count_documents({"role": "assistant"})
     clinics = await db.tenants.count_documents({})
     patients = await db.patients.count_documents({})
-    return {"doctors": doctors, "assistants": assistants, "clinics": clinics, "patients": patients}
+    subscribed = await db.users.count_documents({"role": "doctor", "sub_status": "subscribed"})
+    disabled = await db.users.count_documents({"role": "doctor", "sub_status": "disabled"})
+    trial = doctors - subscribed - disabled
+    return {"doctors": doctors, "assistants": assistants, "clinics": clinics, "patients": patients,
+            "trial": max(0, trial), "subscribed": subscribed, "disabled": disabled}
 
 # ------------------------ App wiring ------------------------
 

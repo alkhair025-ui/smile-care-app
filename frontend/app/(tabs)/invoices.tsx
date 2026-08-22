@@ -7,11 +7,11 @@ import { colors, spacing, radius, font, fontFamily, shadow } from '@/src/theme';
 import { api } from '@/src/api';
 import { useAuth } from '@/src/auth-context';
 import { sharePortalViaWhatsApp } from '@/src/portal-share';
+import { money } from '@/src/currencies';
+import CurrencyPicker from '@/src/components/CurrencyPicker';
 
 const KIND_LABELS: Record<string, string> = { patient: 'المرضى', purchase: 'المشتريات', expense: 'المصاريف', salary: 'الرواتب' };
 const KIND_COLORS: Record<string, string> = { patient: '#3A6F54', purchase: '#B58548', expense: '#A84A42', salary: '#4A5854' };
-const CUR_SYMBOL: Record<string, string> = { SYP: 'ل.س', USD: '$' };
-const money = (n: number, cur = 'SYP') => `${Math.round(n).toLocaleString('en')} ${CUR_SYMBOL[cur] || cur}`;
 
 export default function Invoices() {
   const { user } = useAuth();
@@ -215,13 +215,7 @@ function InvoiceFormModal({ kind, editing, visible, onClose, onSaved }: any) {
                 <View style={{ flex: 1 }}><Text style={styles.label}>السعر</Text><TextInput testID="inv-price" keyboardType="numeric" value={price} onChangeText={setPrice} style={styles.input} /></View>
               </View>
               <Text style={[styles.label, { marginTop: spacing.md }]}>العملة</Text>
-              <View style={styles.curRow}>
-                {['SYP', 'USD'].map((c) => (
-                  <Pressable key={c} testID={`inv-cur-${c}`} onPress={() => setCurrency(c)} style={[styles.curChip, { backgroundColor: currency === c ? colors.brand : colors.surfaceSecondary, borderColor: currency === c ? colors.brand : colors.border }]}>
-                    <Text style={{ color: currency === c ? '#fff' : colors.onSurface, fontFamily: fontFamily.bold }}>{c === 'SYP' ? 'ليرة سورية (ل.س)' : 'دولار ($)'}</Text>
-                  </Pressable>
-                ))}
-              </View>
+              <CurrencyPicker testID="inv-currency" value={currency} onChange={setCurrency} />
               {err ? <Text style={styles.err}>{err}</Text> : null}
               <Pressable testID="save-invoice-btn" onPress={submit} disabled={loading} style={styles.primaryBtn}>
                 {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryBtnText}>حفظ الفاتورة</Text>}

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator, KeyboardAvoidingView, Platform, Modal } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -20,6 +20,15 @@ function nextDays(n: number) {
 const DAY_NAMES = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
 const dateKey = (d: Date) => d.toISOString().slice(0, 10);
 
+// Convert "HH:MM" (24h) to Arabic 12-hour label, e.g. "1:00 ظهراً", "2:30 مساءً".
+function to12h(hhmm: string) {
+  const [hStr, mStr] = hhmm.split(':');
+  const h = parseInt(hStr, 10);
+  const period = h < 12 ? 'صباحاً' : (h < 14 ? 'ظهراً' : 'مساءً');
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${mStr} ${period}`;
+}
+
 export default function BookingPortal() {
   const { tenantId } = useLocalSearchParams<{ tenantId: string }>();
   const [clinic, setClinic] = useState<any>(null);
@@ -29,6 +38,7 @@ export default function BookingPortal() {
   const [slots, setSlots] = useState<any[]>([]);
   const [slotsLoading, setSlotsLoading] = useState(false);
   const [selectedTime, setSelectedTime] = useState('');
+  const [timeOpen, setTimeOpen] = useState(false);
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [reason, setReason] = useState('');
@@ -58,6 +68,7 @@ export default function BookingPortal() {
     try {
       await api.publicBook(tenantId!, { full_name: name, phone, date: dateKey(selectedDay), time: selectedTime, reason });
       setDone(true);
+      loadSlots(selectedDay);
     } catch (e: any) { setErr(e.message || 'تعذّر الحجز'); } finally { setSubmitting(false); }
   };
 
@@ -70,7 +81,7 @@ export default function BookingPortal() {
         <SafeAreaView style={styles.center}>
           <View style={styles.successBadge}><Feather name="check" size={40} color={colors.brand} /></View>
           <Text style={styles.successTitle}>تم استلام طلب حجزك!</Text>
-          <Text style={styles.successText}>سيتواصل معك فريق {clinic.clinic_name} لتأكيد الموعد يوم {DAY_NAMES[selectedDay.getDay()]} الساعة {selectedTime}.</Text>
+          <Text style={styles.successText}>سيتواصل معك فريق {clinic.clinic_name} لتأكيد الموعد يوم {DAY_NAMES[selectedDay.getDay()]} الساعة {to12h(selectedTime)}.</Text>
           <Pressable testID="book-again" onPress={() => { setDone(false); setSelectedTime(''); }} style={styles.againBtn}>
             <Text style={styles.againText}>حجز موعد آخر</Text>
           </Pressable>
@@ -85,6 +96,7 @@ export default function BookingPortal() {
         <SafeAreaView edges={['top']}>
           <Text style={styles.clinicName}>{clinic.clinic_name}</Text>
           {clinic.clinic_address ? <Text style={styles.clinicSub}>{clinic.clinic_address}</Text> : null}
+          {clinic.working_hours ? <Text style={styles.clinicHours}><Feather name="clock" size={12} color="#DDEAE6" /> {clinic.working_hours}</Text> : null}
           <Text style={styles.headerTag}>احجز موعدك بسهولة</Text>
         </SafeAreaView>
       </LinearGradient>
@@ -106,20 +118,48 @@ export default function BookingPortal() {
 
           <Text style={styles.section}>اختر الوقت المتاح</Text>
           {slotsLoading ? <ActivityIndicator color={colors.brand} style={{ marginVertical: spacing.lg }} /> : (
-            <View style={styles.slotsWrap}>
-              {slots.map((s) => (
-                <Pressable
-                  key={s.time}
-                  testID={`slot-${s.time}`}
-                  disabled={!s.available}
-                  onPress={() => setSelectedTime(s.time)}
-                  style={[styles.slot, !s.available && styles.slotTaken, selectedTime === s.time && styles.slotActive]}
-                >
-                  <Text style={[styles.slotText, !s.available && styles.slotTakenText, selectedTime === s.time && { color: '#fff' }]}>{s.time}</Text>
-                </Pressable>
-              ))}
-            </View>
+            <Pressable testID="time-dropdown" onPress={() => setTimeOpen(true)} style={styles.dropdown}>
+              <Feather name="chevron-down" size={20} color={colors.muted} />
+              <Text style={[styles.dropdownText, !selectedTime && { color: colors.muted }]}>
+                {selectedTime ? to12h(selectedTime) : 'اختر الوقت المناسب'}
+              </Text>
+              <Feather name="clock" size={18} color={colors.brand} />
+            </Pressable>
           )}
+
+          <Modal visible={timeOpen} transparent animationType="slide" onRequestClose={() => setTimeOpen(false)}>
+            <Pressable style={styles.timeOverlay} onPress={() => setTimeOpen(false)}>
+              <View style={styles.timeSheet}>
+                <View style={styles.timeHeader}>
+                  <Pressable testID="time-close" onPress={() => setTimeOpen(false)} hitSlop={8}><Feather name="x" size={22} color={colors.onSurface} /></Pressable>
+                  <Text style={styles.timeTitle}>اختر الوقت</Text>
+                  <View style={{ width: 22 }} />
+                </View>
+                <ScrollView contentContainerStyle={{ padding: spacing.lg }}>
+                  {slots.map((s) => (
+                    <Pressable
+                      key={s.time}
+                      testID={`slot-${s.time}`}
+                      disabled={!s.available}
+                      onPress={() => { setSelectedTime(s.time); setTimeOpen(false); }}
+                      style={[
+                        styles.slotRow,
+                        selectedTime === s.time && styles.slotRowActive,
+                        !s.available && styles.slotRowTaken,
+                      ]}
+                    >
+                      <Text style={[styles.slotRowText, !s.available && styles.slotRowTakenText, selectedTime === s.time && { color: '#fff' }]}>
+                        {to12h(s.time)}
+                      </Text>
+                      {!s.available
+                        ? <Text style={styles.takenTag}>محجوز</Text>
+                        : (selectedTime === s.time ? <Feather name="check" size={18} color="#fff" /> : <Feather name="circle" size={16} color={colors.borderStrong} />)}
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              </View>
+            </Pressable>
+          </Modal>
 
           <Text style={styles.section}>بياناتك</Text>
           <View style={styles.card}>
@@ -149,12 +189,25 @@ const styles = StyleSheet.create({
   header: { paddingHorizontal: spacing.xl, paddingBottom: spacing.xl, borderBottomLeftRadius: 28, borderBottomRightRadius: 28 },
   clinicName: { color: '#fff', fontSize: font.xxl, fontFamily: fontFamily.bold, textAlign: 'right', writingDirection: 'rtl', marginTop: spacing.md },
   clinicSub: { color: '#DDEAE6', fontFamily: fontFamily.regular, textAlign: 'right', writingDirection: 'rtl', marginTop: 2 },
+  clinicHours: { color: '#DDEAE6', fontFamily: fontFamily.medium, textAlign: 'right', writingDirection: 'rtl', marginTop: 4 },
   headerTag: { color: '#fff', fontFamily: fontFamily.medium, textAlign: 'right', writingDirection: 'rtl', marginTop: spacing.md, opacity: 0.9 },
   section: { fontSize: font.base, fontFamily: fontFamily.bold, color: colors.onSurfaceSecondary, marginTop: spacing.lg, marginBottom: spacing.sm, textAlign: 'right', writingDirection: 'rtl' },
   dayChip: { width: 64, paddingVertical: spacing.md, borderRadius: radius.md, borderWidth: 1, alignItems: 'center', gap: 4 },
   dayName: { fontSize: 11, fontFamily: fontFamily.medium },
   dayNum: { fontSize: font.lg, fontFamily: fontFamily.bold },
   slotsWrap: { flexDirection: 'row-reverse', flexWrap: 'wrap', gap: spacing.sm },
+  dropdown: { flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'space-between', backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: spacing.md, paddingVertical: spacing.md, marginTop: spacing.sm },
+  dropdownText: { flex: 1, marginHorizontal: spacing.sm, color: colors.onSurface, fontFamily: fontFamily.medium, textAlign: 'right', writingDirection: 'rtl', fontSize: font.base },
+  timeOverlay: { flex: 1, backgroundColor: colors.overlay, justifyContent: 'flex-end' },
+  timeSheet: { backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '70%' },
+  timeHeader: { flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center', padding: spacing.lg, borderBottomWidth: 1, borderBottomColor: colors.divider },
+  timeTitle: { fontSize: font.lg, fontFamily: fontFamily.bold, color: colors.onSurface },
+  slotRow: { flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.md, paddingVertical: spacing.md, borderRadius: radius.md, marginBottom: spacing.sm, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border },
+  slotRowActive: { backgroundColor: colors.brand, borderColor: colors.brand },
+  slotRowTaken: { backgroundColor: colors.surfaceInverse, borderColor: colors.surfaceInverse, opacity: 0.65 },
+  slotRowText: { fontFamily: fontFamily.bold, color: colors.onSurface, fontSize: font.base },
+  slotRowTakenText: { color: '#C5D3CE', textDecorationLine: 'line-through' },
+  takenTag: { color: '#C5D3CE', fontFamily: fontFamily.medium, fontSize: font.sm },
   slot: { width: '22%', paddingVertical: spacing.md, borderRadius: radius.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, alignItems: 'center' },
   slotActive: { backgroundColor: colors.brand, borderColor: colors.brand },
   slotTaken: { backgroundColor: colors.surfaceTertiary, borderColor: colors.surfaceTertiary },

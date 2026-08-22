@@ -8,6 +8,16 @@ import { api } from '@/src/api';
 
 function toDateKey(iso: string) { return (iso || '').slice(0, 10); }
 
+// "HH:MM" (24h) → Arabic 12-hour label, e.g. "1:00 ظهراً", "2:30 مساءً".
+function to12h(hhmm: string) {
+  const [hStr, mStr] = (hhmm || '').split(':');
+  const h = parseInt(hStr, 10);
+  if (isNaN(h)) return hhmm;
+  const period = h < 12 ? 'صباحاً' : (h < 14 ? 'ظهراً' : 'مساءً');
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${mStr} ${period}`;
+}
+
 export default function Appointments() {
   const router = useRouter();
   const [items, setItems] = useState<any[]>([]);
@@ -33,6 +43,8 @@ export default function Appointments() {
     return Object.entries(map).sort(([a], [b]) => a.localeCompare(b));
   }, [items]);
 
+  const pendingCount = useMemo(() => items.filter((a) => a.status === 'pending').length, [items]);
+
   const setStatus = async (a: any, status: string) => {
     await api.updateAppointment(a.id, { ...a, status });
     load();
@@ -41,14 +53,28 @@ export default function Appointments() {
   const confirmAndNotify = async (a: any) => {
     await setStatus(a, 'confirmed');
     const phone = (phones[a.patient_id] || '').replace(/[^\d]/g, '');
-    const msg = encodeURIComponent(`مرحباً ${a.patient_name}، تم تأكيد موعدك في ${clinicName} بتاريخ ${toDateKey(a.date)} الساعة ${a.date.slice(11, 16)}. نراكم قريباً!`);
+    const msg = encodeURIComponent(`مرحباً ${a.patient_name}، تم تأكيد موعدك في ${clinicName} بتاريخ ${toDateKey(a.date)} الساعة ${to12h(a.date.slice(11, 16))}. نراكم قريباً!`);
+    Linking.openURL(phone ? `https://wa.me/${phone}?text=${msg}` : `https://wa.me/?text=${msg}`).catch(() => {});
+  };
+
+  const cancelAndNotify = async (a: any) => {
+    await setStatus(a, 'cancelled');
+    const phone = (phones[a.patient_id] || '').replace(/[^\d]/g, '');
+    const msg = encodeURIComponent(`مرحباً ${a.patient_name}، نعتذر منك، اضطررنا لإلغاء موعدك في ${clinicName} بتاريخ ${toDateKey(a.date)} الساعة ${to12h(a.date.slice(11, 16))}. يرجى التواصل معنا لإعادة تحديد موعد جديد يناسبك. شكراً لتفهمك.`);
     Linking.openURL(phone ? `https://wa.me/${phone}?text=${msg}` : `https://wa.me/?text=${msg}`).catch(() => {});
   };
 
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>المواعيد</Text>
+        <View style={styles.titleWrap}>
+          <Text style={styles.headerTitle}>المواعيد</Text>
+          {pendingCount > 0 && (
+            <View testID="pending-badge" style={styles.pendingCountBadge}>
+              <Text style={styles.pendingCountText}>{pendingCount}</Text>
+            </View>
+          )}
+        </View>
         <View style={{ flexDirection: 'row-reverse', gap: spacing.sm }}>
           <Pressable testID="reminders-btn" onPress={() => router.push('/more/reminders')} style={styles.iconBtn}><Feather name="bell" size={20} color={colors.brand} /></Pressable>
           <Pressable testID="add-appt-btn" onPress={() => setShowAdd(true)} style={styles.addBtn}><Feather name="plus" size={22} color="#fff" /></Pressable>
@@ -85,9 +111,9 @@ export default function Appointments() {
                     )}
                   </View>
                   <View style={styles.statusChips}>
-                    <Chip label="مؤكد" active={a.status === 'confirmed'} onPress={() => setStatus(a, 'confirmed')} color={colors.success} tid={`appt-confirm-${a.id}`} />
+                    <Chip label="مؤكد" active={a.status === 'confirmed'} onPress={() => confirmAndNotify(a)} color={colors.success} tid={`appt-confirm-${a.id}`} />
                     <Chip label="مكتمل" active={a.status === 'completed'} onPress={() => setStatus(a, 'completed')} color={colors.brand} tid={`appt-complete-${a.id}`} />
-                    <Chip label="ملغي" active={a.status === 'cancelled'} onPress={() => setStatus(a, 'cancelled')} color={colors.error} tid={`appt-cancel-${a.id}`} />
+                    <Chip label="ملغي" active={a.status === 'cancelled'} onPress={() => cancelAndNotify(a)} color={colors.error} tid={`appt-cancel-${a.id}`} />
                   </View>
                 </View>
               ))}
@@ -187,6 +213,9 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.surfaceSecondary },
   header: { flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: spacing.lg, paddingVertical: spacing.md, backgroundColor: colors.surface },
   headerTitle: { fontSize: font.xl, fontFamily: fontFamily.bold, color: colors.onSurface, textAlign: 'right', writingDirection: 'rtl' },
+  titleWrap: { flexDirection: 'row-reverse', alignItems: 'center', gap: spacing.sm },
+  pendingCountBadge: { minWidth: 24, height: 24, borderRadius: 12, backgroundColor: colors.warning, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
+  pendingCountText: { color: '#fff', fontFamily: fontFamily.bold, fontSize: font.sm },
   addBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center' },
   iconBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.brandTertiary, alignItems: 'center', justifyContent: 'center' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: spacing.md },

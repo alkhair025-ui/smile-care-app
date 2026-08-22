@@ -7,8 +7,8 @@ import { colors, spacing, radius, font, fontFamily, shadow } from '@/src/theme';
 import { api } from '@/src/api';
 import { useAuth } from '@/src/auth-context';
 import { sharePortalViaWhatsApp } from '@/src/portal-share';
-
-const money = (n: number, cur = 'SYP') => `${Math.round(n).toLocaleString('en')} ${cur === 'USD' ? '$' : 'ل.س'}`;
+import { money } from '@/src/currencies';
+import CurrencyPicker from '@/src/components/CurrencyPicker';
 
 export default function PatientBilling() {
   const router = useRouter();
@@ -206,13 +206,7 @@ function BillingFormModal({ patientId, patientName, editing, visible, onClose, o
               <Text style={[styles.label, { marginTop: spacing.md }]}>التاريخ (YYYY-MM-DD)</Text>
               <TextInput testID="billing-date" value={date} onChangeText={setDate} style={styles.input} />
               <Text style={[styles.label, { marginTop: spacing.md }]}>العملة</Text>
-              <View style={styles.curRow}>
-                {['SYP', 'USD'].map((c) => (
-                  <Pressable key={c} testID={`billing-cur-${c}`} onPress={() => setCurrency(c)} style={[styles.curChip, { backgroundColor: currency === c ? colors.brand : colors.surfaceSecondary, borderColor: currency === c ? colors.brand : colors.border }]}>
-                    <Text style={{ color: currency === c ? '#fff' : colors.onSurface, fontFamily: fontFamily.bold }}>{c === 'SYP' ? 'ليرة سورية (ل.س)' : 'دولار ($)'}</Text>
-                  </Pressable>
-                ))}
-              </View>
+              <CurrencyPicker testID="billing-currency" value={currency} onChange={setCurrency} />
               {err ? <Text style={styles.err}>{err}</Text> : null}
               <Pressable testID="billing-save" onPress={submit} disabled={loading} style={styles.primaryBtn}>
                 {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryBtnText}>حفظ الفاتورة</Text>}

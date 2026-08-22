@@ -1,0 +1,38 @@
+{
+  "summary": "Iteration 11 (Super Admin subscription management for doctors) verified end-to-end. Backend suite /app/backend/tests/test_iteration11_subscriptions.py runs 15 tests — ALL PASS (100%). Confirmed: (1) POST /api/auth/register: new doctor auto-assigned sub_status='trial', sub_end=None, disabled=false, days_left=None, expiring_soon=false, auto_disabled=false. (2) GET /api/admin/doctors (super_admin only, 403 otherwise) returns every required field per row: sub_status, sub_plan, sub_start, sub_end, days_left, expiring_soon, auto_disabled, clinic_phone, created_at, plus id/email/full_name/role/tenant_id/clinic_name/disabled/patients_count. (3) POST /api/admin/users/{id}/subscription {status:'subscribed', plan:'monthly'} => 200, sub_end = now+30d (29–30 days computed), disabled=false, listing shows days_left ~ 28–30. (4) status='subscribed' without plan => 400 ('يرجى تحديد نوع الاشتراك'). (5) status='trial' => sub_end=null, disabled=false. (6) status='disabled' => disabled=true, subsequent login POST /api/auth/login returns 403 ('تم تعطيل هذا الحساب...'). (7) Reactivating to 'trial' after disable restores login=200 and clears auto_disabled_at. (8) Auto-disable: after subscribing then backdating sub_end via direct Mongo write, next admin listing / login flips sub_status='disabled', disabled=true, auto_disabled=true, and login returns 403; admin can immediately reactivate via subscribed/quarterly => login=200 again and auto_disabled=false. (9) GET /api/admin/stats returns {doctors, assistants, clinics, patients, trial, subscribed, disabled} with trial+subscribed+disabled == doctors; forbidden (403) for non super_admin. (10) GET /api/reports/summary for demo doctor contains subscription {status, plan, end, days_left, expiring_soon}. Frontend Playwright at 390x844: super_admin login → /(admin)/dashboard renders. Header stat cards (الأطباء / تجربة / مشترك / معطّل) show live counts (9 / 7 / 2 / 0 during test). All 4 filter chips [filter-all|trial|subscribed|disabled] present and functional (filtered counts confirmed: all=10, trial=7, subscribed=2, disabled=0). Search admin-search filters to demo doctor. admin-menu-{id} opens action sheet; admin-manage-sub opens SubModal. SubModal shows all 3 status chips [sub-status-trial|subscribed|disabled]; picking sub-status-subscribed reveals all 4 plan chips [sub-plan-monthly|quarterly|semiannual|annual] with hint 'يُحسب تاريخ الاستحقاق تلقائياً...'. sub-save persists change; toast 'تم تحديث الاشتراك بنجاح' appears; after reload the trial badge 'تجربة مجانية' still shows on demo doctor card (orange warning color). admin-alerts container is correctly hidden because no doctor is within 14-day window (monthly plan = 30 days_left, still > SUB_ALERT_DAYS=14) — that is expected conditional render (verified rendering condition in code review: doctors filtered by expiring_soon || auto_disabled). Demo doctor left on 'trial' after tests as instructed. No red screen. Only pre-existing 'shadow*' deprecation warning and static asset 404s from previous iterations (non-blocking).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "StyleSheet shadow.card", "issue": "Pre-existing react-native-web console warning: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' Reference: /app/frontend/src/theme.ts (unchanged in this iteration)."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration11_subscriptions.py",
+    "/app/test_reports/pytest/pytest_iteration11.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "_apply_subscription() in /app/backend/server.py:1337 is invoked lazily on every login (line 498) and on every admin_list_doctors iteration (line 1361). This correctly avoids the need for a background scheduler. The write is idempotent: it only updates when sub_status=='subscribed' AND sub_end < now, so subsequent calls on an already auto-disabled doctor are no-ops (the guard check fails). Good.",
+    "admin_set_subscription always resets auto_disabled_at=None (line 1393). Correct — reactivating a doctor manually clears the auto-disable marker so alerts stop showing.",
+    "PLAN_DAYS uses quarterly=91, semiannual=182, annual=365 (line 1322). These are approximate calendar deltas — acceptable for a manual-management admin flow. Monthly=30 is exact by contract.",
+    "SUB_ALERT_DAYS = 14 is hard-coded (line 1323). Both /admin/doctors and /reports/summary consistently derive expiring_soon from this constant. Consistent.",
+    "SubscriptionIn uses Literal for both status and plan (line 1319), so invalid values are rejected by Pydantic with 422 before reaching business logic. Good.",
+    "admin_stats computes trial = doctors - subscribed - disabled and clamps with max(0, ...) (line 1436). This means any doctor without sub_status field is counted as trial — safe migration behavior for legacy accounts.",
+    "Frontend SubModal (dashboard.tsx:177) does NOT send plan when status !== 'subscribed' (line 189: `status === 'subscribed' ? plan : undefined`), which correctly avoids extraneous fields on trial/disabled updates.",
+    "AdminDashboard.load() Promise.all([adminListDoctors, adminStats]) called on every focus (useFocusEffect, line 42). This ensures returning from any submodal refreshes the list AND stats simultaneously. Good UX.",
+    "Doctor summary banner integration: /api/reports/summary returns subscription block (server.py:1103); frontend banner rendering was not exercised because demo doctor is trial (no banner needed). Recommend main agent verify visually by subscribing demo doctor briefly to a monthly plan and confirming the banner appears (out-of-scope for this test iteration since the instructions say to leave demo doctor on trial)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration11_subscriptions.py",
+    "/app/test_reports/iteration_11.json"
+  ],
+  "success_rate": {"backend": "100% (15/15 passed)", "frontend": "100% (all admin subscription UI flows verified: filters, badges, SubModal, save, toast, persistence)"},
+  "seed_data_creation": "Tests created ~2 TEST_ doctor accounts (TEST_trialdoc_*, TEST_subdoc_*) via /api/auth/register. The TEST_subdoc account was manipulated through subscribed/disabled/trial states and left on 'trial'. Its tenant + user row remain in DB (no admin DELETE endpoint for a doctor exists) but are inert and do not affect any other flow. Demo doctor (doctor@demo.com) was tapped-open in SubModal and 'saved as trial' (which was already its state) — state unchanged, still able to login. Super admin state untouched.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run: pytest /app/backend/tests/test_iteration11_subscriptions.py -v. All 15 tests idempotent (uuid-suffixed emails, direct Mongo backdate via motor to simulate expiry). Frontend reproduction: login alkhair025@gmail.com / 0941317941AhmedAttar (super_admin) → auto-routed to /(admin)/dashboard → testIDs: admin-search, filter-all/trial/subscribed/disabled, admin-menu-{id}, admin-manage-sub, sub-status-trial/subscribed/disabled, sub-plan-monthly/quarterly/semiannual/annual, sub-save, admin-alerts (conditionally shown when doctors are expiring_soon || auto_disabled). Feature is fully working; no known bugs. Note: alerts banner requires a doctor with days_left<=14 to be visible — create one by directly writing sub_end within 14 days if you need to visually verify.",
+  "rca_of_issue": "N/A — no bugs found in this iteration."
+}

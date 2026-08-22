@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Modal, TextInput, Linking, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
@@ -6,15 +6,24 @@ import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { Image } from 'expo-image';
-import { colors, spacing, radius, font, fontFamily, shadow, toothColors, toothLabels } from '@/src/theme';
+import { colors, spacing, radius, font, fontFamily, shadow } from '@/src/theme';
 import { api } from '@/src/api';
 import { sharePortalViaWhatsApp } from '@/src/portal-share';
+import { buildTreatmentMaps, toothTextColor, TreatmentType } from '@/src/treatment';
+import { money } from '@/src/currencies';
 
-const UP_RIGHT = [18, 17, 16, 15, 14, 13, 12, 11];
-const UP_LEFT = [21, 22, 23, 24, 25, 26, 27, 28];
-const LO_LEFT = [31, 32, 33, 34, 35, 36, 37, 38];
-const LO_RIGHT = [48, 47, 46, 45, 44, 43, 42, 41];
-const CONDITIONS = ['healthy', 'caries', 'filling', 'crown', 'rct', 'extracted', 'implant', 'missing'];
+const Q1 = [11, 12, 13, 14, 15, 16, 17, 18]; // علوي أيمن
+const Q2 = [21, 22, 23, 24, 25, 26, 27, 28]; // علوي أيسر
+const Q3 = [31, 32, 33, 34, 35, 36, 37, 38]; // سفلي أيسر
+const Q4 = [41, 42, 43, 44, 45, 46, 47, 48]; // سفلي أيمن
+const QUADRANTS = [
+  { key: 'Q1', label: 'الربع الأول · علوي أيمن', teeth: Q1 },
+  { key: 'Q2', label: 'الربع الثاني · علوي أيسر', teeth: Q2 },
+  { key: 'Q4', label: 'الربع الرابع · سفلي أيمن', teeth: Q4 },
+  { key: 'Q3', label: 'الربع الثالث · سفلي أيسر', teeth: Q3 },
+];
+// Most-used treatments shown as direct buttons; everything else lives in the searchable "all types" sheet.
+const FREQUENT = ['caries', 'filling', 'crown', 'extracted', 'healthy'];
 
 export default function PatientDetail() {
   const router = useRouter();
@@ -25,13 +34,22 @@ export default function PatientDetail() {
   const [invoices, setInvoices] = useState<any[]>([]);
   const [clinic, setClinic] = useState<any>({});
   const [loading, setLoading] = useState(true);
-  const [selectedTooth, setSelectedTooth] = useState<number | null>(null);
+  const [activeCondition, setActiveCondition] = useState<string>('healthy');
   const [uploading, setUploading] = useState(false);
   const [xrayUrls, setXrayUrls] = useState<Record<string, string>>({});
   const [xrayError, setXrayError] = useState('');
   const [notes, setNotes] = useState('');
   const [savingNotes, setSavingNotes] = useState(false);
   const [sharingId, setSharingId] = useState<string | null>(null);
+  const [customTypes, setCustomTypes] = useState<TreatmentType[]>([]);
+  const [addTypeOpen, setAddTypeOpen] = useState(false);
+  const [newTypeLabel, setNewTypeLabel] = useState('');
+  const [addingType, setAddingType] = useState(false);
+  const [addTypeErr, setAddTypeErr] = useState('');
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [moreSearch, setMoreSearch] = useState('');
+
+  const { colorMap, labelMap, conditions } = useMemo(() => buildTreatmentMaps(customTypes), [customTypes]);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -46,6 +64,7 @@ export default function PatientDetail() {
       const urls: Record<string, string> = {};
       for (const xr of x) urls[xr.id] = await api.xrayFileUrl(xr.id);
       setXrayUrls(urls);
+      try { setCustomTypes(await api.listTreatmentTypes()); } catch { /* noop */ }
       try { const inv = await api.listInvoices('patient'); setInvoices(inv.filter((i: any) => i.patient_id === id)); } catch { setInvoices([]); }
       try { setClinic(await api.getSettings()); } catch { /* noop */ }
     } catch (e: any) {
@@ -56,12 +75,22 @@ export default function PatientDetail() {
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  const setCondition = async (cond: string) => {
-    if (selectedTooth == null) return;
-    const tooth = selectedTooth;
-    setSelectedTooth(null);
+  const addTreatmentType = async () => {
+    setAddTypeErr('');
+    const label = newTypeLabel.trim();
+    if (!label) { setAddTypeErr('يرجى إدخال اسم نوع المعالجة'); return; }
+    setAddingType(true);
     try {
-      const updated = await api.setTooth(id!, { tooth, condition: cond, note: chart[tooth]?.note || '' });
+      const created = await api.createTreatmentType(label);
+      setCustomTypes((list) => [...list, created]);
+      setNewTypeLabel(''); setAddTypeOpen(false);
+    } catch (e: any) { setAddTypeErr(e?.message || 'تعذّر إضافة النوع'); }
+    finally { setAddingType(false); }
+  };
+
+  const applyToTooth = async (tooth: number) => {
+    try {
+      const updated = await api.setTooth(id!, { tooth, condition: activeCondition, note: chart[tooth]?.note || '' });
       setChart((c) => ({ ...c, [tooth]: updated }));
     } catch (e: any) {
       console.warn('setTooth error', e?.message);
@@ -180,19 +209,34 @@ export default function PatientDetail() {
 
         {/* Dental chart */}
         <SectionCard icon="grid" title="مخطط الأسنان (FDI)">
-          <Text style={styles.arcLabel}>الفك العلوي</Text>
-          <View style={styles.arch}>{[...UP_RIGHT, ...UP_LEFT].map((n) => <Tooth key={n} n={n} chart={chart} onSelect={setSelectedTooth} />)}</View>
-          <View style={styles.midDivider} />
-          <View style={styles.arch}>{[...LO_LEFT.slice().reverse(), ...LO_RIGHT.slice().reverse()].map((n) => <Tooth key={n} n={n} chart={chart} onSelect={setSelectedTooth} />)}</View>
-          <Text style={styles.arcLabel}>الفك السفلي</Text>
-          <View style={styles.legendWrap}>
-            {Object.keys(toothLabels).map((k) => (
-              <View key={k} style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: toothColors[k], borderWidth: k === 'healthy' ? 1 : 0, borderColor: colors.border }]} />
-                <Text style={styles.legendText}>{toothLabels[k]}</Text>
-              </View>
-            ))}
+          <Text style={styles.paletteHint}>اختر نوع المعالجة ثم اضغط على السن لتطبيقه</Text>
+          <View style={styles.paletteWrap}>
+            {FREQUENT.map((c) => {
+              const active = activeCondition === c;
+              return (
+                <Pressable key={c} testID={`palette-${c}`} onPress={() => setActiveCondition(c)} style={[styles.paletteChip, active && styles.paletteChipActive]}>
+                  <View style={[styles.condDot, { backgroundColor: colorMap[c], borderColor: c === 'healthy' ? colors.border : colorMap[c] }]} />
+                  <Text style={[styles.paletteText, active && { color: '#fff' }]}>{labelMap[c]}</Text>
+                </Pressable>
+              );
+            })}
+            <Pressable testID="more-types-btn" onPress={() => { setMoreSearch(''); setMoreOpen(true); }} style={[styles.paletteChip, styles.moreChip, !FREQUENT.includes(activeCondition) && styles.paletteChipActive]}>
+              {!FREQUENT.includes(activeCondition)
+                ? <View style={[styles.condDot, { backgroundColor: colorMap[activeCondition], borderColor: colorMap[activeCondition] }]} />
+                : <Feather name="grid" size={15} color={colors.brand} />}
+              <Text style={[styles.paletteText, { color: !FREQUENT.includes(activeCondition) ? '#fff' : colors.brand }]}>
+                {!FREQUENT.includes(activeCondition) ? labelMap[activeCondition] : 'كل الأنواع'}
+              </Text>
+              <Feather name="chevron-down" size={15} color={!FREQUENT.includes(activeCondition) ? '#fff' : colors.brand} />
+            </Pressable>
           </View>
+
+          {QUADRANTS.map((q) => (
+            <View key={q.key} style={styles.quadrant}>
+              <Text style={styles.quadLabel}>{q.label}</Text>
+              <View style={styles.arch}>{q.teeth.map((n) => <Tooth key={n} n={n} chart={chart} onApply={applyToTooth} colorMap={colorMap} />)}</View>
+            </View>
+          ))}
         </SectionCard>
 
         {/* X-rays */}
@@ -230,7 +274,7 @@ export default function PatientDetail() {
             <View key={i.id} style={styles.invCard}>
               <View style={{ flexDirection: 'row-reverse', justifyContent: 'space-between' }}>
                 <Text style={styles.infoVal}>{(i.date || '').slice(0, 10)}</Text>
-                <Text style={[styles.infoVal, { color: colors.brand, fontFamily: fontFamily.bold }]}>{i.total} {i.currency === 'USD' ? '$' : 'ل.س'}</Text>
+                <Text style={[styles.infoVal, { color: colors.brand, fontFamily: fontFamily.bold }]}>{money(i.total, i.currency)}</Text>
               </View>
               {(i.items || []).map((it: any, idx: number) => (
                 <Text key={idx} style={styles.infoLabel}>• {it.description} ({it.quantity} × {it.unit_price})</Text>
@@ -240,32 +284,74 @@ export default function PatientDetail() {
         </SectionCard>
       </ScrollView>
 
-      <Modal visible={selectedTooth != null} transparent animationType="fade" onRequestClose={() => setSelectedTooth(null)}>
-        <Pressable style={styles.sheetOverlay} onPress={() => setSelectedTooth(null)}>
-          <View style={styles.sheet}>
-            <Text style={styles.sheetTitle}>السن رقم {selectedTooth}</Text>
-            <View style={styles.condGrid}>
-              {CONDITIONS.map((c) => (
-                <Pressable key={c} testID={`cond-${c}`} onPress={() => setCondition(c)} style={styles.condChip}>
-                  <View style={[styles.condDot, { backgroundColor: toothColors[c] }]} />
-                  <Text style={styles.condText}>{toothLabels[c]}</Text>
-                </Pressable>
-              ))}
+      <Modal visible={moreOpen} transparent animationType="slide" onRequestClose={() => setMoreOpen(false)}>
+        <Pressable style={styles.sheetOverlay} onPress={() => setMoreOpen(false)}>
+          <Pressable style={styles.moreSheet} onPress={() => {}}>
+            <View style={styles.moreHeader}>
+              <Pressable testID="more-close" onPress={() => setMoreOpen(false)} hitSlop={8}><Feather name="x" size={22} color={colors.onSurface} /></Pressable>
+              <Text style={styles.sheetTitle}>كل أنواع العلاجات</Text>
+              <View style={{ width: 22 }} />
             </View>
-          </View>
+            <View style={styles.moreSearchWrap}>
+              <Feather name="search" size={18} color={colors.muted} />
+              <TextInput testID="more-search" value={moreSearch} onChangeText={setMoreSearch} placeholder="ابحث عن نوع العلاج..." placeholderTextColor={colors.muted} style={styles.moreSearchInput} autoFocus />
+            </View>
+            <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingTop: 0 }} keyboardShouldPersistTaps="handled">
+              {conditions.filter((c) => !moreSearch.trim() || (labelMap[c] || '').includes(moreSearch.trim())).map((c) => {
+                const active = activeCondition === c;
+                return (
+                  <Pressable key={c} testID={`more-opt-${c}`} onPress={() => { setActiveCondition(c); setMoreOpen(false); }} style={[styles.moreRow, active && styles.moreRowActive]}>
+                    <View style={[styles.condDot, { backgroundColor: colorMap[c], borderColor: c === 'healthy' ? colors.border : colorMap[c] }]} />
+                    <Text style={[styles.moreRowText, active && { color: '#fff' }]}>{labelMap[c]}</Text>
+                    {active ? <Feather name="check" size={18} color="#fff" /> : null}
+                  </Pressable>
+                );
+              })}
+              <Pressable testID="add-treatment-type" onPress={() => { setMoreOpen(false); setAddTypeOpen(true); }} style={[styles.moreRow, styles.moreAddRow]}>
+                <Feather name="plus-circle" size={16} color={colors.brand} />
+                <Text style={[styles.moreRowText, { color: colors.brand }]}>نوع جديد</Text>
+              </Pressable>
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal visible={addTypeOpen} transparent animationType="fade" onRequestClose={() => setAddTypeOpen(false)}>
+        <Pressable style={styles.sheetOverlay} onPress={() => setAddTypeOpen(false)}>
+          <Pressable style={styles.addSheet} onPress={() => {}}>
+            <Text style={styles.sheetTitle}>نوع معالجة جديد</Text>
+            <Text style={styles.addHint}>سيتم توليد لون مميز تلقائياً مختلف عن الأنواع الحالية.</Text>
+            <TextInput
+              testID="new-type-input"
+              value={newTypeLabel}
+              onChangeText={setNewTypeLabel}
+              placeholder="مثال: تبييض، تقويم، جسر..."
+              placeholderTextColor={colors.muted}
+              style={styles.addInput}
+            />
+            {addTypeErr ? <Text style={styles.xrayErr}>{addTypeErr}</Text> : null}
+            <View style={styles.addActions}>
+              <Pressable testID="cancel-type-btn" onPress={() => { setAddTypeOpen(false); setAddTypeErr(''); }} style={[styles.addBtn2, styles.addBtnGhost]}>
+                <Text style={styles.addBtnGhostText}>إلغاء</Text>
+              </Pressable>
+              <Pressable testID="save-type-btn" onPress={addTreatmentType} disabled={addingType} style={[styles.addBtn2, styles.addBtnPrimary]}>
+                {addingType ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.addBtnPrimaryText}>إضافة</Text>}
+              </Pressable>
+            </View>
+          </Pressable>
         </Pressable>
       </Modal>
     </SafeAreaView>
   );
 }
 
-function Tooth({ n, chart, onSelect }: { n: number; chart: any; onSelect: (n: number) => void }) {
+function Tooth({ n, chart, onApply, colorMap }: { n: number; chart: any; onApply: (n: number) => void; colorMap: Record<string, string> }) {
   const st = chart[n];
-  const bg = st ? toothColors[st.condition] : '#fff';
-  const isDark = st && ['extracted', 'implant'].includes(st.condition);
+  const bg = st ? (colorMap[st.condition] || '#fff') : '#fff';
+  const textColor = st ? toothTextColor(st.condition, bg) : colors.onSurface;
   return (
-    <Pressable testID={`tooth-${n}`} onPress={() => onSelect(n)} style={[styles.tooth, { backgroundColor: bg }]}>
-      <Text style={[styles.toothNum, { color: isDark ? '#fff' : colors.onSurface }]}>{n}</Text>
+    <Pressable testID={`tooth-${n}`} onPress={() => onApply(n)} style={[styles.tooth, { backgroundColor: bg }]}>
+      <Text style={[styles.toothNum, { color: textColor }]}>{n}</Text>
     </Pressable>
   );
 }
@@ -299,6 +385,22 @@ const styles = StyleSheet.create({
   savePillText: { color: '#fff', fontFamily: fontFamily.bold },
   arcLabel: { textAlign: 'center', color: colors.muted, fontFamily: fontFamily.medium, marginVertical: spacing.sm },
   arch: { flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 4, justifyContent: 'center' },
+  paletteHint: { color: colors.muted, fontFamily: fontFamily.regular, fontSize: font.sm, textAlign: 'right', writingDirection: 'rtl', marginBottom: spacing.sm },
+  paletteWrap: { flexDirection: 'row-reverse', flexWrap: 'wrap', gap: spacing.sm, marginBottom: spacing.lg },
+  paletteChip: { flexDirection: 'row-reverse', alignItems: 'center', gap: 6, backgroundColor: colors.surfaceSecondary, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.border },
+  paletteChipActive: { backgroundColor: colors.brand, borderColor: colors.brand },
+  paletteText: { fontFamily: fontFamily.bold, color: colors.onSurface, fontSize: font.sm },
+  quadrant: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, marginBottom: spacing.sm },
+  quadLabel: { color: colors.onSurfaceSecondary, fontFamily: fontFamily.bold, fontSize: font.sm, textAlign: 'center', marginBottom: spacing.sm },
+  moreChip: { borderColor: colors.brand },
+  moreSheet: { backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '75%', paddingBottom: spacing.md },
+  moreHeader: { flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center', padding: spacing.lg, borderBottomWidth: 1, borderBottomColor: colors.divider },
+  moreSearchWrap: { flexDirection: 'row-reverse', alignItems: 'center', gap: spacing.sm, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, paddingHorizontal: spacing.md, marginHorizontal: spacing.lg, marginVertical: spacing.md },
+  moreSearchInput: { flex: 1, paddingVertical: spacing.md, color: colors.onSurface, fontFamily: fontFamily.regular, textAlign: 'right', writingDirection: 'rtl' },
+  moreRow: { flexDirection: 'row-reverse', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.md, marginBottom: spacing.sm, borderRadius: radius.md, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border },
+  moreRowActive: { backgroundColor: colors.brand, borderColor: colors.brand },
+  moreRowText: { flex: 1, fontFamily: fontFamily.bold, color: colors.onSurface, fontSize: font.base, textAlign: 'right', writingDirection: 'rtl' },
+  moreAddRow: { justifyContent: 'center', borderStyle: 'dashed', backgroundColor: colors.brandTertiary },
   midDivider: { height: 1, backgroundColor: colors.border, marginVertical: spacing.md },
   tooth: { width: 32, height: 40, borderRadius: 6, borderWidth: 1, borderColor: colors.borderStrong, alignItems: 'center', justifyContent: 'center' },
   toothNum: { fontSize: 10, fontFamily: fontFamily.bold },
@@ -331,4 +433,14 @@ const styles = StyleSheet.create({
   condChip: { flexDirection: 'row-reverse', alignItems: 'center', gap: 6, backgroundColor: colors.surfaceSecondary, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.pill },
   condDot: { width: 14, height: 14, borderRadius: 7, borderWidth: 1, borderColor: colors.border },
   condText: { fontFamily: fontFamily.medium, color: colors.onSurface },
+  addTypeChip: { borderWidth: 1, borderColor: colors.brand, borderStyle: 'dashed', backgroundColor: colors.brandTertiary },
+  addSheet: { backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: spacing.lg, gap: spacing.sm },
+  addHint: { color: colors.muted, fontFamily: fontFamily.regular, fontSize: font.sm, textAlign: 'right', writingDirection: 'rtl', marginBottom: spacing.xs },
+  addInput: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, paddingHorizontal: spacing.md, paddingVertical: spacing.md, color: colors.onSurface, fontFamily: fontFamily.regular, textAlign: 'right', writingDirection: 'rtl' },
+  addActions: { flexDirection: 'row-reverse', gap: spacing.sm, marginTop: spacing.md, paddingBottom: spacing.md },
+  addBtn2: { flex: 1, paddingVertical: spacing.md, borderRadius: radius.md, alignItems: 'center' },
+  addBtnPrimary: { backgroundColor: colors.brand },
+  addBtnPrimaryText: { color: '#fff', fontFamily: fontFamily.bold },
+  addBtnGhost: { backgroundColor: colors.surfaceSecondary },
+  addBtnGhostText: { color: colors.onSurfaceSecondary, fontFamily: fontFamily.bold },
 });

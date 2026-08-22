@@ -1,0 +1,39 @@
+{
+  "summary": "Iteration 9 (public booking page redesign) tested end-to-end. Backend suite /app/backend/tests/test_iteration9_public_booking.py runs 12 tests: ALL PASS. Confirmed: (1) GET /api/public/clinic/{tenant}/slots?date=YYYY-MM-DD returns exactly 30 slots from 08:00 to 22:30 at 30-min steps, no 23:00. (2) All slots start available on an empty future date. (3) POST /api/public/clinic/{tenant}/book with a valid slot returns {ok:true, message}. (4) Immediately after a booking, GET /slots flips that slot to available:false while others stay true. (5) Duplicate booking on same date/time → 409 with Arabic message. (6) Out-of-hours 23:00 and 07:30 → 400. (7) Off-grid 08:15 → 400. (8) Unknown tenant → 404 on both /slots and /book. Frontend Playwright at 390x844 on /book/bf595268-f99b-44c7-a3d0-fdc979bc0250: page loads with clinic name (عيادة الابتسامة) and header 'احجز موعدك بسهولة'; day chips render 14 days; tapping 'time-dropdown' opens the bottom-sheet Modal; exactly 30 slot rows are rendered; Arabic 12-hour labels verified — 08:00→'8:00 صباحاً', 12:00→'12:00 ظهراً', 13:00→'1:00 ظهراً', 14:30→'2:30 مساءً', 22:30→'10:30 مساءً'; slot-23:00 is NOT rendered (correct); selecting an available slot closes the modal and updates dropdown label; filling name+phone+reason and tapping book-submit shows the success screen ('تم استلام طلب حجزك!') with book-again button. ONE UI BUG found: after tapping book-again the slots list is STALE — the freshly-booked slot still shows as available (no 'محجوز' tag). Root cause: submit() does not call loadSlots(selectedDay) after success, and book-again handler only resets `done` and `selectedTime` without reloading slots; useEffect only reloads when selectedDay changes. This lets a user attempt to book the same slot again and only see the 409 error after submit. No red screen. Console noise: pre-existing shadow* deprecation warnings + a few 404s on asset icons — not blocking.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "BookingPortal book-again", "issue": "After a successful booking, the slots list is stale. Tapping 'حجز موعد آخر' (book-again) resets `done` and `selectedTime` but never re-fetches slots, so the just-booked time still appears available in the dropdown modal — no 'محجوز' tag, still tappable. User only discovers via 409 after re-submitting. Reference: /app/frontend/app/book/[tenantId].tsx:70 (missing loadSlots call in submit success branch) and :84 (book-again onPress).", "testID": "book-again", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "StyleSheet shadow.card", "issue": "react-native-web console warning: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' (pre-existing, non-blocking). Reference: /app/frontend/src/theme.ts"}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration9_public_booking.py",
+    "/app/test_reports/pytest/pytest_iteration9.xml"
+  ],
+  "action_items": [
+    "Fix stale-slots after booking in /app/frontend/app/book/[tenantId].tsx: either (a) call `await loadSlots(selectedDay)` right after `setDone(true)` inside submit(), OR (b) in the book-again onPress handler call `loadSlots(selectedDay)` in addition to resetting `done` and `selectedTime`. Option (a) is preferable because it also protects users who abandon the success screen and re-open the modal.",
+    "Optional (non-blocking): silence recurring 'shadow*' react-native-web deprecation warnings by migrating shadow.card to boxShadow in /app/frontend/src/theme.ts."
+  ],
+  "critical_code_review_comments": [
+    "_valid_slots() in /app/backend/server.py:873 generates HH:MM strings and lexicographically filters against LAST_SLOT='22:30' using `if hhmm > LAST_SLOT: continue`. Because inputs are zero-padded (`f\"{h:02d}:{m:02d}\"`), string comparison matches numeric ordering. Correctly produces 30 slots (16 hours × 2 - 2 excluded = 30, since 23:00 and 23:30 are excluded).",
+    "public_book (/app/backend/server.py:906-919) validates data.time against `_valid_slots()` (30-min grid enforced) and prevents double-booking via a regex-anchored find_one on the ISO date. Uses status $ne 'cancelled' consistently in both /slots and /book, so cancelled appointments correctly free their slot.",
+    "Auto-creates a patient row keyed by tenant_id + phone on first booking — good UX. If the same phone is used on another day, no new duplicate is created. However, if patient exists, incoming full_name/reason are NOT stored anywhere on the patient record (only on the appointment). Acceptable given the public flow but worth noting.",
+    "Frontend book-again handler resets state but never re-fetches. This is the source of the UI bug reported above.",
+    "to12h(hhmm) in /app/frontend/app/book/[tenantId].tsx:24: h<12→'صباحاً', h<14→'ظهراً', else 'مساءً'. Matches the requested Arabic labels (12:00 → ظهراً, 13:00 → ظهراً, 14:00+ → مساءً). Correct."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration9_public_booking.py"],
+  "success_rate": {"backend": "100% (12/12 passed)", "frontend": "~92% — end-to-end booking flow works; only stale-slots-after-booking issue"},
+  "seed_data_creation": "Backend tests create one appointment + patient per pytest run on a random future date in the target tenant (labelled with 'TEST_Iter9' in reason/notes). UI Playwright test creates one additional appointment (2026-08-25 21:30 on the demo tenant). Neither can collide with real usage; safe to leave.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run: EXPO_PUBLIC_BACKEND_URL=<preview> pytest /app/backend/tests/test_iteration9_public_booking.py -n 0 -v. Tenant fixture ID (عيادة الابتسامة) is hard-coded: bf595268-f99b-44c7-a3d0-fdc979bc0250. The UI stale-slots bug is trivial to reproduce: /book/{tenant} → pick day → open dropdown → book any slot → tap 'حجز موعد آخر' → open dropdown → the just-booked slot still shows as available (no محجوز, still tappable). Fix in /app/frontend/app/book/[tenantId].tsx:70 (add loadSlots(selectedDay) after setDone(true)).",
+  "rca_of_issue": "UI bug — Stale slots after successful booking. Reproduction: 1) open /book/{tenantId}, 2) pick day D, 3) open time-dropdown, 4) select slot T (e.g. 21:30), 5) fill name+phone, 6) submit — success screen appears, 7) tap 'حجز موعد آخر', 8) open dropdown — slot T is still rendered as available with no 'محجوز' tag and is tappable. Root cause: in /app/frontend/app/book/[tenantId].tsx, `submit()` only calls setDone(true) without refetching slots; the book-again onPress handler resets `done` and `selectedTime` but doesn't touch the slots array; the load-slots useEffect only triggers when `selectedDay` changes. Fix: call `loadSlots(selectedDay)` inside the try-block right after `setDone(true)` — this keeps the local cache in sync with the server (which is already returning available:false for the just-booked slot, as backend tests confirm)."
+}

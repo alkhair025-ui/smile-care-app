@@ -72,6 +72,8 @@ export const api = {
   adminStats: () => request<any>('/admin/stats'),
   adminResetPassword: (userId: string, new_password: string) => request(`/admin/users/${userId}/reset-password`, { method: 'POST', body: { new_password } }),
   adminToggleDisabled: (userId: string) => request<any>(`/admin/users/${userId}/toggle-disabled`, { method: 'POST' }),
+  adminSetSubscription: (userId: string, status: string, plan?: string) =>
+    request<any>(`/admin/users/${userId}/subscription`, { method: 'POST', body: { status, plan } }),
 
   listAssistants: () => request<User[]>('/auth/assistants'),
   createAssistant: (payload: { email: string; password: string; full_name: string }) =>
@@ -91,6 +93,9 @@ export const api = {
 
   getChart: (pid: string) => request<any[]>(`/patients/${pid}/chart`),
   setTooth: (pid: string, data: any) => request<any>(`/patients/${pid}/chart`, { method: 'POST', body: data }),
+
+  listTreatmentTypes: () => request<any[]>('/treatment-types'),
+  createTreatmentType: (label: string) => request<any>('/treatment-types', { method: 'POST', body: { label } }),
 
   listXrays: (pid: string) => request<any[]>(`/patients/${pid}/xrays`),
   uploadXray: async (pid: string, uri: string, name: string, type: string) => {
@@ -152,4 +157,6 @@ export const api = {
   deleteLab: (id: string) => request(`/lab-orders/${id}`, { method: 'DELETE' }),
 
   summary: () => request<any>('/reports/summary'),
+  profitReport: (period: string, year?: number) =>
+    request<any>(`/reports/profit?period=${period}${year ? `&year=${year}` : ''}`),
 };

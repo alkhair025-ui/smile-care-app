@@ -25,7 +25,10 @@
 - Public auto-updating patient portal /p/{token} (financials + medical report + chart) — replaces stored PDFs
 - Smart WhatsApp: sends patient portal link; appointment confirm + tomorrow reminders
 - Public booking portal /book/{tenant} (slots, pending bookings)
+  - Slots 08:00→22:30 (30-min, last appt 22:30 ends 23:00); 12-hour Arabic labels; dropdown/modal picker; booked slots disabled ("محجوز"); server-side slot validation (400 off-grid, 409 duplicate); refetch after booking
 - Inventory (+low-stock), Lab orders, Dashboard (daily summary + charts)
+- Super Admin subscriptions: doctors auto 'trial' (no expiry) → admin sets 'subscribed' (monthly/quarterly/semiannual/annual, due date auto-computed) → 'disabled' manual or auto on expiry (lazy check on login+admin list, blocks login, instant reactivation); admin panel has status badges, status filter, search, expiring-soon alerts, reg date, phone; doctor dashboard shows ≤14-day expiry banner (via /reports/summary)
+- Financial reports page /more/reports: daily/weekly/monthly/yearly profit per currency + year dropdown (2026+); dashboard quick button
 - Clinic location: GPS + interactive OpenStreetMap; share booking link
 - Backend tests: iterations 1-6 all passing
 
