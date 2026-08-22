@@ -10,6 +10,7 @@ import { colors, spacing, radius, font, fontFamily, shadow } from '@/src/theme';
 import { api } from '@/src/api';
 import { sharePortalViaWhatsApp } from '@/src/portal-share';
 import { buildTreatmentMaps, toothTextColor, TreatmentType } from '@/src/treatment';
+import { money } from '@/src/currencies';
 
 const UP_RIGHT = [18, 17, 16, 15, 14, 13, 12, 11];
 const UP_LEFT = [21, 22, 23, 24, 25, 26, 27, 28];
@@ -251,7 +252,7 @@ export default function PatientDetail() {
             <View key={i.id} style={styles.invCard}>
               <View style={{ flexDirection: 'row-reverse', justifyContent: 'space-between' }}>
                 <Text style={styles.infoVal}>{(i.date || '').slice(0, 10)}</Text>
-                <Text style={[styles.infoVal, { color: colors.brand, fontFamily: fontFamily.bold }]}>{i.total} {i.currency === 'USD' ? '$' : 'ل.س'}</Text>
+                <Text style={[styles.infoVal, { color: colors.brand, fontFamily: fontFamily.bold }]}>{money(i.total, i.currency)}</Text>
               </View>
               {(i.items || []).map((it: any, idx: number) => (
                 <Text key={idx} style={styles.infoLabel}>• {it.description} ({it.quantity} × {it.unit_price})</Text>

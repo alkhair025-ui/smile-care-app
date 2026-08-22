@@ -2,9 +2,9 @@ import { Platform, Linking } from 'react-native';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { api } from '@/src/api';
+import { curSymbol } from '@/src/currencies';
 
-const CUR: Record<string, string> = { SYP: 'ل.س', USD: '$' };
-const money = (n: number, cur = 'SYP') => `${(Number(n) || 0).toLocaleString('en')} ${CUR[cur] || cur}`;
+const money = (n: number, cur = 'SYP') => `${(Number(n) || 0).toLocaleString('en')} ${curSymbol(cur)}`;
 
 export function invoiceHtml(inv: any, clinic: { name?: string; phone?: string; address?: string }) {
   const cur = inv.currency || 'SYP';
