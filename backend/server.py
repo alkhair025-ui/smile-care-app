@@ -106,6 +106,7 @@ class SettingsUpdate(BaseModel):
     clinic_address: Optional[str] = None
     clinic_phone: Optional[str] = None
     clinic_location: Optional[dict] = None  # {lat, lng}
+    working_hours: Optional[str] = None
 
 class PatientIn(BaseModel):
     full_name: str
@@ -941,6 +942,7 @@ async def public_clinic(tenant_id: str):
         "clinic_address": t.get("clinic_address", ""),
         "clinic_phone": t.get("clinic_phone", ""),
         "clinic_location": t.get("clinic_location"),
+        "working_hours": t.get("working_hours", ""),
     }
 
 def _valid_slots() -> set:

@@ -96,6 +96,7 @@ export default function BookingPortal() {
         <SafeAreaView edges={['top']}>
           <Text style={styles.clinicName}>{clinic.clinic_name}</Text>
           {clinic.clinic_address ? <Text style={styles.clinicSub}>{clinic.clinic_address}</Text> : null}
+          {clinic.working_hours ? <Text style={styles.clinicHours}><Feather name="clock" size={12} color="#DDEAE6" /> {clinic.working_hours}</Text> : null}
           <Text style={styles.headerTag}>احجز موعدك بسهولة</Text>
         </SafeAreaView>
       </LinearGradient>
@@ -188,6 +189,7 @@ const styles = StyleSheet.create({
   header: { paddingHorizontal: spacing.xl, paddingBottom: spacing.xl, borderBottomLeftRadius: 28, borderBottomRightRadius: 28 },
   clinicName: { color: '#fff', fontSize: font.xxl, fontFamily: fontFamily.bold, textAlign: 'right', writingDirection: 'rtl', marginTop: spacing.md },
   clinicSub: { color: '#DDEAE6', fontFamily: fontFamily.regular, textAlign: 'right', writingDirection: 'rtl', marginTop: 2 },
+  clinicHours: { color: '#DDEAE6', fontFamily: fontFamily.medium, textAlign: 'right', writingDirection: 'rtl', marginTop: 4 },
   headerTag: { color: '#fff', fontFamily: fontFamily.medium, textAlign: 'right', writingDirection: 'rtl', marginTop: spacing.md, opacity: 0.9 },
   section: { fontSize: font.base, fontFamily: fontFamily.bold, color: colors.onSurfaceSecondary, marginTop: spacing.lg, marginBottom: spacing.sm, textAlign: 'right', writingDirection: 'rtl' },
   dayChip: { width: 64, paddingVertical: spacing.md, borderRadius: radius.md, borderWidth: 1, alignItems: 'center', gap: 4 },
