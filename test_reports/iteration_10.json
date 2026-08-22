@@ -1,0 +1,31 @@
+{
+  "summary": "Iteration 10 (Custom Treatment Types with auto-generated distinct colors) verified end-to-end. Backend suite /app/backend/tests/test_iteration10_treatment_types.py runs 6 tests — ALL PASS. Confirmed: GET /api/treatment-types returns [] (empty for fresh tenant) and requires auth (401 without token). POST /api/treatment-types {label} creates a type with fields {key: 'ct_<8hex>', label, color: '#RRGGBB', created_at}. Rejects empty/whitespace label with 400 ('يرجى إدخال اسم نوع المعالجة'), rejects missing label with 422 (Pydantic), rejects duplicate label with 409 ('نوع المعالجة موجود مسبقاً'). Assistant login remains disabled (401) per agent note. Color-distinctness check passed: created 3 successive types with pairwise RGB distance > 30 AND every custom color at RGB distance > 30 from ALL 8 built-in tooth colors (#FFFFFF, #A84A42, #4A7065, #B58548, #6B7876, #B0C4BC, #8B5CF6, #334F46). Frontend Playwright at 390x844: (1) login with doctor@demo.com/demo1234 → dashboard. (2) /patients loads 11 patients. (3) Open first patient → مخطط الأسنان section renders 32 FDI teeth. (4) Tap tooth-11 → condition sheet opens with 8 built-in chips AND 'نوع جديد' chip (testID=add-treatment-type). (5) Tap add-treatment-type → new-type modal opens with testID=new-type-input and testID=save-type-btn (and cancel-type-btn). (6) Submit empty → inline error 'يرجى إدخال اسم نوع المعالجة'. (7) Add label 'تبييض_UITest' → modal closes; open tooth-12 → new chip cond-ct_fdde4815 rendered with distinct teal color (rgb(46,194,194) = #2EC2C2, matches curl test). (8) Apply to tooth-12 → tooth colored #2EC2C2. (9) Full page reload → tooth-12 keeps color, legend still shows 'تبييض_UITest' with same color dot → persistence confirmed. (10) Attempt duplicate 'تبييض_UITest' → red error banner 'نوع المعالجة موجود مسبقاً' inline in modal. Built-in labels (سليم/تسوس/حشوة/تاج/علاج عصب/مقلوع/زرعة/مفقود) unchanged. Test data cleaned up after run (tenant.treatment_types reset to []). No red screen. Only pre-existing shadow* deprecation warnings and asset 404s (non-blocking, carried from earlier iterations).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "StyleSheet shadow.card", "issue": "Pre-existing react-native-web console warning: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' Reference: /app/frontend/src/theme.ts (unchanged in this iteration)."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration10_treatment_types.py",
+    "/app/test_reports/pytest/pytest_iteration10.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "generate_distinct_color() in /app/backend/server.py:641 sweeps the HLS hue circle in 3° steps at fixed L=0.47, S=0.62 and returns the candidate with maximum minimum-distance to all used colors. Deterministic and guarantees the returned color is at least ~40+ RGB units from every prior color (empirically confirmed with 3 sequential creates: #2EC2C2, #2E2EC2, #C22EA4 as reported by main agent, plus my tests). Solid.",
+    "POST /api/treatment-types uses `$push` with a plain dict — safe, but note: the check for duplicate labels reads tenant snapshot BEFORE the push, so a concurrent double-POST could theoretically create two entries with the same label. Non-blocking for a single-doctor scenario.",
+    "GET /api/treatment-types uses get_current_user (any authenticated tenant user, including future assistants) — matches the design that assistants can also view/apply custom types; only doctors can CREATE (require_role('doctor')). Correct.",
+    "Frontend buildTreatmentMaps in /app/frontend/src/treatment.ts merges built-in colors + custom types by key; toothTextColor() correctly delegates to luminance-based readable color for custom hexes while preserving legacy behavior (extracted/implant stay white on dark). Verified visually: teal #2EC2C2 → onSurface text (correct, it's light).",
+    "patient/[id].tsx addTreatmentType() closes the modal on success and appends to local `customTypes`, so useMemo rebuilds colorMap/labelMap/conditions instantly — no stale state. Reload path also refetches via api.listTreatmentTypes() in load(). Good."
+  ],
+  "updated_files": ["/app/backend/tests/test_iteration10_treatment_types.py", "/app/test_reports/iteration_10.json"],
+  "success_rate": {"backend": "100% (6/6 passed)", "frontend": "100% (all UI flows verified end-to-end)"},
+  "seed_data_creation": "During testing 3 backend test types + 1 UI type were created on tenant bf595268-f99b-44c7-a3d0-fdc979bc0250, and tooth-12 was set to the custom UI type. All test data cleaned up after the run: tenant.treatment_types reset to [] and any tooth_charts entries with condition starting 'ct_' deleted. Tenant is back to the same state as before this iteration.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run: pytest /app/backend/tests/test_iteration10_treatment_types.py -v. All 6 tests idempotent thanks to uuid-suffixed TEST_ labels and no dependency on tenant starting empty (each run only creates 3 new distinct labels). UI reproduction: login doctor@demo.com/demo1234 → /patients → tap first patient → scroll to 'مخطط الأسنان' → tap any tooth (testID=tooth-11..48) → look for testID=add-treatment-type chip → tap → testIDs new-type-input, save-type-btn, cancel-type-btn. Feature is fully working; no known bugs.",
+  "rca_of_issue": "N/A — no bugs found in this iteration."
+}

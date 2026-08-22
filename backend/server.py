@@ -7,6 +7,7 @@ import uuid
 import logging
 import secrets
 import hashlib
+import colorsys
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Literal, Annotated
@@ -618,6 +619,77 @@ async def set_tooth(pid: str, data: ToothStateIn, user: dict = Depends(get_curre
     doc = await db.tooth_charts.find_one({"patient_id": pid, "tenant_id": user["tenant_id"], "tooth": data.tooth})
     return _clean(doc)
 
+# ------------------------ Treatment Types (custom, per-tenant) ------------------------
+
+# Built-in tooth-condition colors (mirror of frontend theme.ts). Custom colors must
+# stay clearly distinct from these AND from each other.
+BUILTIN_TOOTH_COLORS = [
+    "#FFFFFF", "#A84A42", "#4A7065", "#B58548",
+    "#6B7876", "#B0C4BC", "#8B5CF6", "#334F46",
+]
+
+def _hex_to_rgb(h: str):
+    h = h.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+def _rgb_to_hex(r: int, g: int, b: int) -> str:
+    return "#{:02X}{:02X}{:02X}".format(int(r), int(g), int(b))
+
+def _color_distance(c1, c2) -> float:
+    return sum((a - b) ** 2 for a, b in zip(c1, c2)) ** 0.5
+
+def generate_distinct_color(used_hex: list) -> str:
+    """Pick a vivid color whose distance to every used color is maximal.
+
+    Sweeps the full hue circle at fixed saturation/lightness and returns the
+    candidate that is furthest (in RGB space) from all previously used colors,
+    guaranteeing no repeat or near-duplicate with existing treatment colors.
+    """
+    used_rgb = []
+    for hx in used_hex:
+        try:
+            used_rgb.append(_hex_to_rgb(hx))
+        except Exception:
+            continue
+    best_hex, best_score = None, -1.0
+    for deg in range(0, 360, 3):
+        r, g, b = colorsys.hls_to_rgb(deg / 360.0, 0.47, 0.62)
+        cand_rgb = (round(r * 255), round(g * 255), round(b * 255))
+        score = min((_color_distance(cand_rgb, u) for u in used_rgb), default=1e9)
+        if score > best_score:
+            best_score, best_hex = score, _rgb_to_hex(*cand_rgb)
+    return best_hex or "#4A7065"
+
+class TreatmentTypeIn(BaseModel):
+    label: str
+
+@api_router.get("/treatment-types")
+async def list_treatment_types(user: dict = Depends(get_current_user)):
+    tenant = await get_tenant(user["tenant_id"])
+    return (tenant or {}).get("treatment_types", [])
+
+@api_router.post("/treatment-types")
+async def create_treatment_type(data: TreatmentTypeIn, doctor: dict = Depends(require_role("doctor"))):
+    label = data.label.strip()
+    if not label:
+        raise HTTPException(400, "يرجى إدخال اسم نوع المعالجة")
+    tenant = await get_tenant(doctor["tenant_id"])
+    existing = (tenant or {}).get("treatment_types", [])
+    if any((t.get("label", "").strip() == label) for t in existing):
+        raise HTTPException(409, "نوع المعالجة موجود مسبقاً")
+    used = BUILTIN_TOOTH_COLORS + [t.get("color") for t in existing if t.get("color")]
+    new_type = {
+        "key": f"ct_{uuid.uuid4().hex[:8]}",
+        "label": label,
+        "color": generate_distinct_color(used),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.tenants.update_one(
+        {"tenant_id": doctor["tenant_id"]},
+        {"$push": {"treatment_types": new_type}},
+    )
+    return new_type
+
 # ------------------------ X-Rays ------------------------
 
 @api_router.post("/patients/{pid}/xrays")
@@ -845,6 +917,7 @@ async def public_patient_portal(token: str):
             "doctor_notes": p.get("doctor_notes", ""),
         },
         "chart": [{"tooth": c["tooth"], "condition": c["condition"], "note": c.get("note", "")} for c in charts],
+        "treatment_types": tenant.get("treatment_types", []),
         "invoices": [{
             "id": i["id"], "date": i.get("date", ""), "items": i.get("items", []),
             "total": i.get("total", 0), "paid": i.get("paid", 0),

@@ -4,8 +4,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams } from 'expo-router';
-import { colors, spacing, radius, font, fontFamily, shadow, toothColors, toothLabels } from '@/src/theme';
+import { colors, spacing, radius, font, fontFamily, shadow } from '@/src/theme';
 import { api } from '@/src/api';
+import { buildTreatmentMaps, toothTextColor } from '@/src/treatment';
 
 const UP_RIGHT = [18, 17, 16, 15, 14, 13, 12, 11];
 const UP_LEFT = [21, 22, 23, 24, 25, 26, 27, 28];
@@ -29,14 +30,15 @@ export default function PatientPortal() {
 
   const chartMap: Record<number, any> = {};
   (data.chart || []).forEach((t: any) => { chartMap[t.tooth] = t; });
+  const { colorMap, labelMap, conditions } = buildTreatmentMaps(data.treatment_types || []);
 
   const Tooth = ({ n }: { n: number }) => {
     const st = chartMap[n];
-    const bg = st ? toothColors[st.condition] : '#fff';
-    const dark = st && ['extracted', 'implant'].includes(st.condition);
+    const bg = st ? (colorMap[st.condition] || '#fff') : '#fff';
+    const textColor = st ? toothTextColor(st.condition, bg) : colors.onSurface;
     return (
       <View style={[styles.tooth, { backgroundColor: bg }]}>
-        <Text style={[styles.toothNum, { color: dark ? '#fff' : colors.onSurface }]}>{n}</Text>
+        <Text style={[styles.toothNum, { color: textColor }]}>{n}</Text>
       </View>
     );
   };
@@ -100,10 +102,10 @@ export default function PatientPortal() {
           <View style={styles.arch}>{[...LO_LEFT.slice().reverse(), ...LO_RIGHT.slice().reverse()].map((n) => <Tooth key={n} n={n} />)}</View>
           <Text style={styles.arcLabel}>الفك السفلي</Text>
           <View style={styles.legendWrap}>
-            {Object.keys(toothLabels).map((k) => (
+            {conditions.map((k) => (
               <View key={k} style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: toothColors[k], borderWidth: k === 'healthy' ? 1 : 0, borderColor: colors.border }]} />
-                <Text style={styles.legendText}>{toothLabels[k]}</Text>
+                <View style={[styles.legendDot, { backgroundColor: colorMap[k], borderWidth: k === 'healthy' ? 1 : 0, borderColor: colors.border }]} />
+                <Text style={styles.legendText}>{labelMap[k]}</Text>
               </View>
             ))}
           </View>

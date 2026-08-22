@@ -92,6 +92,9 @@ export const api = {
   getChart: (pid: string) => request<any[]>(`/patients/${pid}/chart`),
   setTooth: (pid: string, data: any) => request<any>(`/patients/${pid}/chart`, { method: 'POST', body: data }),
 
+  listTreatmentTypes: () => request<any[]>('/treatment-types'),
+  createTreatmentType: (label: string) => request<any>('/treatment-types', { method: 'POST', body: { label } }),
+
   listXrays: (pid: string) => request<any[]>(`/patients/${pid}/xrays`),
   uploadXray: async (pid: string, uri: string, name: string, type: string) => {
     const form = new FormData();
