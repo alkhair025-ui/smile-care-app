@@ -1197,12 +1197,12 @@ async def summary(currency: Optional[str] = None, user: dict = Depends(get_curre
 
         # Only aggregate records that belong to the selected currency — never mix currencies.
         cinv = [i for i in invoices if (i.get("currency") or "SYP") == cur]
-        revenue = sum(i.get("total", 0) for i in cinv if i.get("kind") == "patient")
+        revenue = sum(i.get("paid", 0) for i in cinv if i.get("kind") == "patient")
         purchases = sum(i.get("total", 0) for i in cinv if i.get("kind") == "purchase")
         salaries = sum(i.get("total", 0) for i in cinv if i.get("kind") == "salary")
         expenses = sum(i.get("total", 0) for i in cinv if i.get("kind") == "expense")
         today_income = sum(
-            i.get("total", 0) for i in cinv
+            i.get("paid", 0) for i in cinv
             if i.get("kind") == "patient" and str(i.get("date", "")).startswith(today_date)
         )
         result["today_income"] = today_income
@@ -1227,7 +1227,7 @@ async def summary(currency: Optional[str] = None, user: dict = Depends(get_curre
                 m = next((mm for mm in months if mm["label"] == label), None)
                 if m:
                     if inv.get("kind") == "patient":
-                        m["revenue"] += inv.get("total", 0)
+                        m["revenue"] += inv.get("paid", 0)
                     else:
                         m["expenses"] += inv.get("total", 0)
             except Exception:

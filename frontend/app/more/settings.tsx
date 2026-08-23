@@ -57,11 +57,10 @@ export default function Settings() {
     if (!loc?.lat) return;
     Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${loc.lat},${loc.lng}`);
   };
+  const bookingLink = user ? `https://dazzling-amazement-production-68f2.up.railway.app/book/${user.tenant_id}` : '';
 
-  const bookingLink = user ? `${APP_BASE}/book/${user.tenant_id}` : '';
   const shareBooking = async () => {
-    const msg = `احجز موعدك في ${settings?.clinic_name || 'عيادتنا'} عبر الرابط:\n${bookingLink}`;
-    try {
+    const msg = `احجز موعدك في ${settings?.clinic_name || 'عيادتنا'} عبر الرابط:\n${bookingLink}`;    try {
       if (Platform.OS === 'web') {
         await Linking.openURL(`https://wa.me/?text=${encodeURIComponent(msg)}`);
       } else {
