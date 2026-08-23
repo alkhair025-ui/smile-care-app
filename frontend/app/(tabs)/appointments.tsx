@@ -155,7 +155,7 @@ function AddApptModal({ visible, onClose, onCreated }: any) {
       await api.createAppointment({
         patient_id: patient.id,
         patient_name: patient.full_name,
-        date: new Date(date).toISOString(),
+        date: date.length === 16 ? `${date}:00` : date,
         duration_minutes: 30,
         reason,
         status: 'scheduled',
