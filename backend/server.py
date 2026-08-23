@@ -1154,7 +1154,7 @@ async def summary(currency: Optional[str] = None, user: dict = Depends(get_curre
     tenant_id = user["tenant_id"]
     financials_visible = await can_view_financials(user)
 
- today_date = datetime.now().strftime("%Y-%m-%d")
+     today_date = datetime.now().strftime("%Y-%m-%d")
     
     # طباعة للتأكد في الـ Terminal عما يبحث عنه السيرفر
     print("DEBUG TODAY DATE:", today_date)
