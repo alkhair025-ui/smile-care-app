@@ -611,8 +611,13 @@ async def update_patient(pid: str, data: dict, user: dict = Depends(get_current_
 
 @api_router.delete("/patients/{pid}")
 async def delete_patient(pid: str, user: dict = Depends(get_current_user)):
+    scope = {"patient_id": pid, "tenant_id": user["tenant_id"]}
     await db.patients.delete_one({"id": pid, "tenant_id": user["tenant_id"]})
-    await db.tooth_charts.delete_many({"patient_id": pid, "tenant_id": user["tenant_id"]})
+    await db.tooth_charts.delete_many(scope)
+    await db.xrays.delete_many(scope)
+    await db.invoices.delete_many(scope)
+    await db.treatments.delete_many(scope)
+    await db.appointments.delete_many(scope)
     return {"ok": True}
 
 # ------------------------ Dental Chart ------------------------
@@ -703,6 +708,70 @@ async def create_treatment_type(data: TreatmentTypeIn, doctor: dict = Depends(re
         {"$push": {"treatment_types": new_type}},
     )
     return new_type
+
+# ------------------------ Treatment sessions (clinical follow-ups) ------------------------
+
+class TreatmentCreateIn(BaseModel):
+    teeth: list[int]
+    condition: str
+    name: str = ""
+
+class SessionIn(BaseModel):
+    name: str
+    note: str = ""
+
+@api_router.get("/patients/{pid}/treatments")
+async def list_treatments(pid: str, user: dict = Depends(get_current_user)):
+    docs = await db.treatments.find({"patient_id": pid, "tenant_id": user["tenant_id"]}).sort("created_at", -1).to_list(500)
+    return [_clean(d) for d in docs]
+
+@api_router.post("/patients/{pid}/treatments")
+async def create_treatment(pid: str, data: TreatmentCreateIn, user: dict = Depends(get_current_user)):
+    now = datetime.now(timezone.utc)
+    first_session = {"id": str(uuid.uuid4()), "date": now.isoformat(), "name": data.name or "الجلسة الأولى", "note": ""}
+    doc = {
+        "id": str(uuid.uuid4()),
+        "tenant_id": user["tenant_id"],
+        "patient_id": pid,
+        "teeth": data.teeth,
+        "condition": data.condition,
+        "name": data.name,
+        "created_at": now.isoformat(),
+        "sessions": [first_session],
+    }
+    await db.treatments.insert_one(doc)
+    return _clean(doc)
+
+@api_router.post("/patients/{pid}/treatments/{tid}/sessions")
+async def add_treatment_session(pid: str, tid: str, data: SessionIn, user: dict = Depends(get_current_user)):
+    now = datetime.now(timezone.utc)
+    session = {"id": str(uuid.uuid4()), "date": now.isoformat(), "name": data.name, "note": data.note}
+    r = await db.treatments.update_one(
+        {"id": tid, "patient_id": pid, "tenant_id": user["tenant_id"]},
+        {"$push": {"sessions": session}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(404, "المعالجة غير موجودة")
+    doc = await db.treatments.find_one({"id": tid, "tenant_id": user["tenant_id"]})
+    return _clean(doc)
+
+@api_router.delete("/patients/{pid}/treatments/{tid}")
+async def delete_treatment(pid: str, tid: str, user: dict = Depends(get_current_user)):
+    r = await db.treatments.delete_one({"id": tid, "patient_id": pid, "tenant_id": user["tenant_id"]})
+    if r.deleted_count == 0:
+        raise HTTPException(404, "المعالجة غير موجودة")
+    return {"ok": True}
+
+@api_router.delete("/patients/{pid}/treatments/{tid}/sessions/{sid}")
+async def delete_treatment_session(pid: str, tid: str, sid: str, user: dict = Depends(get_current_user)):
+    r = await db.treatments.update_one(
+        {"id": tid, "patient_id": pid, "tenant_id": user["tenant_id"]},
+        {"$pull": {"sessions": {"id": sid}}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(404, "المعالجة غير موجودة")
+    doc = await db.treatments.find_one({"id": tid, "tenant_id": user["tenant_id"]})
+    return _clean(doc)
 
 # ------------------------ X-Rays ------------------------
 

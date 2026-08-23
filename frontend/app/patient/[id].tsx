@@ -48,6 +48,14 @@ export default function PatientDetail() {
   const [addTypeErr, setAddTypeErr] = useState('');
   const [moreOpen, setMoreOpen] = useState(false);
   const [moreSearch, setMoreSearch] = useState('');
+  const [selectedTeeth, setSelectedTeeth] = useState<number[]>([]);
+  const [treatments, setTreatments] = useState<any[]>([]);
+  const [savingTreatment, setSavingTreatment] = useState(false);
+  const [activeTreatment, setActiveTreatment] = useState<any>(null);
+  const [showSessForm, setShowSessForm] = useState(false);
+  const [sessName, setSessName] = useState('');
+  const [sessNote, setSessNote] = useState('');
+  const [addingSess, setAddingSess] = useState(false);
 
   const { colorMap, labelMap, conditions } = useMemo(() => buildTreatmentMaps(customTypes), [customTypes]);
 
@@ -65,6 +73,7 @@ export default function PatientDetail() {
       for (const xr of x) urls[xr.id] = await api.xrayFileUrl(xr.id);
       setXrayUrls(urls);
       try { setCustomTypes(await api.listTreatmentTypes()); } catch { /* noop */ }
+      try { setTreatments(await api.listTreatments(id)); } catch { setTreatments([]); }
       try { const inv = await api.listInvoices('patient'); setInvoices(inv.filter((i: any) => i.patient_id === id)); } catch { setInvoices([]); }
       try { setClinic(await api.getSettings()); } catch { /* noop */ }
     } catch (e: any) {
@@ -88,14 +97,80 @@ export default function PatientDetail() {
     finally { setAddingType(false); }
   };
 
-  const applyToTooth = async (tooth: number) => {
-    try {
-      const updated = await api.setTooth(id!, { tooth, condition: activeCondition, note: chart[tooth]?.note || '' });
-      setChart((c) => ({ ...c, [tooth]: updated }));
-    } catch (e: any) {
-      console.warn('setTooth error', e?.message);
-    }
+  const toggleTooth = (tooth: number) => {
+    setSelectedTeeth((prev) => prev.includes(tooth) ? prev.filter((t) => t !== tooth) : [...prev, tooth]);
   };
+
+  const saveTreatment = async () => {
+    if (selectedTeeth.length === 0 || savingTreatment) return;
+    setSavingTreatment(true);
+    try {
+      const teeth = [...selectedTeeth].sort((a, b) => a - b);
+      // Create the treatment record (with an initial session) and open its session view.
+      // The chart itself is NOT permanently colored — the treatment lives in the log/sessions,
+      // so the chart returns to its normal (clean) state for future treatments.
+      const t = await api.createTreatment(id!, { teeth, condition: activeCondition, name: labelMap[activeCondition] || activeCondition });
+      setTreatments((prev) => [t, ...prev]);
+      // Reset the chart back to its normal state so new treatments can be started.
+      setSelectedTeeth([]);
+      setActiveCondition('healthy');
+      setActiveTreatment(t);
+    } catch (e: any) {
+      console.warn('saveTreatment error', e?.message);
+    } finally { setSavingTreatment(false); }
+  };
+
+  const addFollowUp = async () => {
+    const name = sessName.trim();
+    if (!name || addingSess || !activeTreatment) return;
+    setAddingSess(true);
+    try {
+      const updated = await api.addTreatmentSession(id!, activeTreatment.id, { name, note: sessNote.trim() });
+      setActiveTreatment(updated);
+      setTreatments((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
+      setSessName(''); setSessNote(''); setShowSessForm(false);
+    } catch (e: any) {
+      console.warn('addFollowUp error', e?.message);
+    } finally { setAddingSess(false); }
+  };
+
+  // ---- Safe deletes (with confirmation) ----
+  const [confirmState, setConfirmState] = useState<{ title: string; message: string; onConfirm: () => Promise<void> } | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
+
+  const runConfirm = async () => {
+    if (!confirmState) return;
+    setConfirmBusy(true);
+    try { await confirmState.onConfirm(); setConfirmState(null); }
+    catch (e: any) { console.warn('confirm action error', e?.message); }
+    finally { setConfirmBusy(false); }
+  };
+
+  const askDeletePatient = () => setConfirmState({
+    title: 'حذف المريض',
+    message: `سيتم حذف «${patient?.full_name}» وكل بياناته (المخطط، الأشعة، الفواتير، المعالجات، المواعيد) نهائياً. هل أنت متأكد؟`,
+    onConfirm: async () => { await api.deletePatient(id!); router.back(); },
+  });
+
+  const askDeleteTreatment = (t: any) => setConfirmState({
+    title: 'حذف المعالجة',
+    message: `سيتم حذف معالجة «${labelMap[t.condition] || t.name}» وكل جلساتها نهائياً. هل أنت متأكد؟`,
+    onConfirm: async () => {
+      await api.deleteTreatment(id!, t.id);
+      setTreatments((prev) => prev.filter((x) => x.id !== t.id));
+      setActiveTreatment((cur: any) => (cur && cur.id === t.id ? null : cur));
+    },
+  });
+
+  const askDeleteSession = (s: any) => setConfirmState({
+    title: 'حذف الجلسة',
+    message: `سيتم حذف جلسة «${s.name}» نهائياً. هل أنت متأكد؟`,
+    onConfirm: async () => {
+      const updated = await api.deleteTreatmentSession(id!, activeTreatment.id, s.id);
+      setActiveTreatment(updated);
+      setTreatments((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
+    },
+  });
 
   const saveNotes = async () => {
     setSavingNotes(true);
@@ -170,7 +245,9 @@ export default function PatientDetail() {
           <Feather name="chevron-right" size={26} color={colors.onSurface} />
         </Pressable>
         <Text style={styles.headerTitle} numberOfLines={1}>{patient.full_name}</Text>
-        <View style={{ width: 26 }} />
+        <Pressable onPress={askDeletePatient} testID="pt-delete" hitSlop={8}>
+          <Feather name="trash-2" size={22} color={colors.error} />
+        </Pressable>
       </View>
 
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: spacing.xxxl }}>
@@ -209,7 +286,7 @@ export default function PatientDetail() {
 
         {/* Dental chart */}
         <SectionCard icon="grid" title="مخطط الأسنان (FDI)">
-          <Text style={styles.paletteHint}>اختر نوع المعالجة ثم اضغط على السن لتطبيقه</Text>
+          <Text style={styles.paletteHint}>اختر نوع المعالجة وحدّد الأسنان ثم اضغط «حفظ المعالجة» لفتح جلسات المتابعة</Text>
           <View style={styles.paletteWrap}>
             {FREQUENT.map((c) => {
               const active = activeCondition === c;
@@ -234,9 +311,46 @@ export default function PatientDetail() {
           {QUADRANTS.map((q) => (
             <View key={q.key} style={styles.quadrant}>
               <Text style={styles.quadLabel}>{q.label}</Text>
-              <View style={styles.arch}>{q.teeth.map((n) => <Tooth key={n} n={n} chart={chart} onApply={applyToTooth} colorMap={colorMap} />)}</View>
+              <View style={styles.arch}>{q.teeth.map((n) => <Tooth key={n} n={n} chart={chart} onToggle={toggleTooth} selected={selectedTeeth.includes(n)} colorMap={colorMap} />)}</View>
             </View>
           ))}
+
+          <Pressable
+            testID="save-treatment-btn"
+            onPress={saveTreatment}
+            disabled={selectedTeeth.length === 0 || savingTreatment}
+            style={[styles.saveTreatmentBtn, (selectedTeeth.length === 0 || savingTreatment) && styles.saveTreatmentBtnDisabled]}
+          >
+            {savingTreatment ? <ActivityIndicator color="#fff" size="small" /> : (
+              <>
+                <Feather name="save" size={16} color="#fff" />
+                <Text style={styles.saveTreatmentText}>
+                  حفظ المعالجة{selectedTeeth.length > 0 ? ` (${selectedTeeth.length} سن)` : ''}
+                </Text>
+              </>
+            )}
+          </Pressable>
+        </SectionCard>
+
+        {/* Treatments log */}
+        <SectionCard icon="activity" title="سجل المعالجات وجلساتها">
+          {treatments.length === 0 ? (
+            <Text style={styles.emptyInline}>لا توجد معالجات مسجّلة بعد</Text>
+          ) : (
+            treatments.map((t) => (
+              <Pressable key={t.id} testID={`treatment-${t.id}`} onPress={() => setActiveTreatment(t)} style={styles.trmtRow}>
+                <View style={[styles.condDot, { backgroundColor: colorMap[t.condition] || colors.brand, borderColor: colors.border }]} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.trmtName}>{labelMap[t.condition] || t.name}</Text>
+                  <Text style={styles.trmtMeta}>الأسنان: {(t.teeth || []).join('، ')} · {(t.sessions || []).length} جلسة · {String(t.created_at).slice(0, 10)}</Text>
+                </View>
+                <Pressable testID={`delete-treatment-${t.id}`} onPress={() => askDeleteTreatment(t)} hitSlop={8} style={styles.rowDeleteBtn}>
+                  <Feather name="trash-2" size={18} color={colors.error} />
+                </Pressable>
+                <Feather name="chevron-left" size={18} color={colors.muted} />
+              </Pressable>
+            ))
+          )}
         </SectionCard>
 
         {/* X-rays */}
@@ -345,12 +459,12 @@ export default function PatientDetail() {
   );
 }
 
-function Tooth({ n, chart, onApply, colorMap }: { n: number; chart: any; onApply: (n: number) => void; colorMap: Record<string, string> }) {
+function Tooth({ n, chart, onToggle, selected, colorMap }: { n: number; chart: any; onToggle: (n: number) => void; selected: boolean; colorMap: Record<string, string> }) {
   const st = chart[n];
   const bg = st ? (colorMap[st.condition] || '#fff') : '#fff';
   const textColor = st ? toothTextColor(st.condition, bg) : colors.onSurface;
   return (
-    <Pressable testID={`tooth-${n}`} onPress={() => onApply(n)} style={[styles.tooth, { backgroundColor: bg }]}>
+    <Pressable testID={`tooth-${n}`} onPress={() => onToggle(n)} style={[styles.tooth, { backgroundColor: bg }, selected && styles.toothSelected]}>
       <Text style={[styles.toothNum, { color: textColor }]}>{n}</Text>
     </Pressable>
   );
@@ -401,6 +515,35 @@ const styles = StyleSheet.create({
   moreRowActive: { backgroundColor: colors.brand, borderColor: colors.brand },
   moreRowText: { flex: 1, fontFamily: fontFamily.bold, color: colors.onSurface, fontSize: font.base, textAlign: 'right', writingDirection: 'rtl' },
   moreAddRow: { justifyContent: 'center', borderStyle: 'dashed', backgroundColor: colors.brandTertiary },
+  toothSelected: { borderWidth: 2, borderColor: colors.brand },
+  saveTreatmentBtn: { flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: spacing.sm, backgroundColor: colors.brand, paddingVertical: spacing.md, borderRadius: radius.md, marginTop: spacing.md },
+  saveTreatmentBtnDisabled: { backgroundColor: colors.borderStrong },
+  saveTreatmentText: { color: '#fff', fontFamily: fontFamily.bold, fontSize: font.base },
+  trmtRow: { flexDirection: 'row-reverse', alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.divider },
+  trmtName: { fontFamily: fontFamily.bold, color: colors.onSurface, fontSize: font.base, textAlign: 'right', writingDirection: 'rtl' },
+  trmtMeta: { fontFamily: fontFamily.regular, color: colors.muted, fontSize: font.sm, textAlign: 'right', writingDirection: 'rtl', marginTop: 2 },
+  sessSheet: { backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '80%', paddingBottom: spacing.md },
+  sessHeader: { flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center', padding: spacing.lg, borderBottomWidth: 1, borderBottomColor: colors.divider },
+  sessInfoCard: { backgroundColor: colors.brandTertiary, borderRadius: radius.md, padding: spacing.md, marginTop: spacing.md },
+  sessInfoRow: { flexDirection: 'row-reverse', alignItems: 'center', gap: spacing.sm },
+  sessTitle: { fontFamily: fontFamily.bold, color: colors.brand, fontSize: font.lg, textAlign: 'right', writingDirection: 'rtl' },
+  sessTeeth: { fontFamily: fontFamily.medium, color: colors.onSurfaceSecondary, fontSize: font.sm, textAlign: 'right', writingDirection: 'rtl', marginTop: 4 },
+  sessRow: { flexDirection: 'row-reverse', alignItems: 'flex-start', gap: spacing.sm, paddingVertical: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.divider },
+  sessBullet: { width: 26, height: 26, borderRadius: 13, backgroundColor: colors.brand, alignItems: 'center', justifyContent: 'center', marginTop: 2 },
+  sessBulletText: { color: '#fff', fontFamily: fontFamily.bold, fontSize: font.sm },
+  sessName: { fontFamily: fontFamily.bold, color: colors.onSurface, fontSize: font.base, textAlign: 'right', writingDirection: 'rtl' },
+  sessNote: { fontFamily: fontFamily.regular, color: colors.onSurfaceSecondary, fontSize: font.sm, textAlign: 'right', writingDirection: 'rtl', marginTop: 2 },
+  sessDate: { fontFamily: fontFamily.regular, color: colors.muted, fontSize: 11, textAlign: 'right', writingDirection: 'rtl', marginTop: 2 },
+  sessForm: { marginTop: spacing.md },
+  addSessBtn: { flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: spacing.sm, marginTop: spacing.md, paddingVertical: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.brand, borderStyle: 'dashed', backgroundColor: colors.brandTertiary },
+  addSessText: { color: colors.brand, fontFamily: fontFamily.bold, fontSize: font.base },
+  rowDeleteBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.errorBg },
+  confirmSheet: { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.lg, width: '86%', maxWidth: 420, alignItems: 'center', gap: spacing.sm, alignSelf: 'center' },
+  confirmIcon: { width: 52, height: 52, borderRadius: 26, backgroundColor: colors.errorBg, alignItems: 'center', justifyContent: 'center', marginBottom: spacing.xs },
+  confirmTitle: { fontSize: font.lg, fontFamily: fontFamily.bold, color: colors.onSurface, textAlign: 'center' },
+  confirmMsg: { fontSize: font.sm, fontFamily: fontFamily.regular, color: colors.onSurfaceSecondary, textAlign: 'center', writingDirection: 'rtl', lineHeight: 20 },
+  confirmDeleteBtn: { backgroundColor: colors.error },
+  confirmOverlay: { flex: 1, backgroundColor: colors.overlay, alignItems: 'center', justifyContent: 'center', padding: spacing.lg },
   midDivider: { height: 1, backgroundColor: colors.border, marginVertical: spacing.md },
   tooth: { width: 32, height: 40, borderRadius: 6, borderWidth: 1, borderColor: colors.borderStrong, alignItems: 'center', justifyContent: 'center' },
   toothNum: { fontSize: 10, fontFamily: fontFamily.bold },
