@@ -1156,9 +1156,7 @@ async def summary(currency: Optional[str] = None, user: dict = Depends(get_curre
     tenant_id = user["tenant_id"]
     financials_visible = await can_view_financials(user)
 
-today_date = datetime.now(CLINIC_TZ).strftime("%Y-%m-%d")
-# طباعة للتأكد في الـ Terminal عما يبحث عنه السيرفر
-    print("DEBUG TODAY DATE:", today_date)
+    today_date = datetime.now(CLINIC_TZ).strftime("%Y-%m-%d")
 
     today_appointments = await db.appointments.count_documents({
         "tenant_id": tenant_id,
