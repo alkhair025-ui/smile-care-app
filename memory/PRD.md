@@ -19,7 +19,8 @@
 ## Implemented (through 2026-08-18)
 - Auth: JWT login/register, forgot/reset password (email), super admin dashboard, disabled-login block
 - Patients CRUD + search, EHR, doctor_notes; PARTIAL patch (no data loss)
-- Interactive FDI dental chart (persists), X-ray upload with auto compression (client + server Pillow)
+- Interactive FDI dental chart (quadrant layout, persists) + treatment palette (frequent + searchable "all types" + add custom type with auto distinct color); X-ray upload with auto compression (client + server Pillow)
+- Treatment sessions: select teeth + type → «حفظ المعالجة» creates a treatment (auto initial session) & opens session modal; add follow-up sessions; chart resets after save; treatments log lists all with dates/session counts
 - Per-patient billing management page (treatment/cost/paid/remaining/date, SYP/USD)
 - Invoices (4 kinds) with search + date filter, currency SYP/USD, edit/delete
 - Public auto-updating patient portal /p/{token} (financials + medical report + chart) — replaces stored PDFs
