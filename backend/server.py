@@ -10,6 +10,7 @@ import hashlib
 import colorsys
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import List, Optional, Literal, Annotated
 
 import jwt
@@ -28,10 +29,11 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field
+from zoneinfo import ZoneInfo
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
-
+CLINIC_TZ = ZoneInfo("Asia/Damascus")
 MONGO_URL = os.environ['MONGO_URL']
 DB_NAME = os.environ['DB_NAME']
 JWT_SECRET = os.environ.get('JWT_SECRET', 'eayadati-dev-secret-change-in-prod-64chars-XXXXXXXXXXXXXXXXXXXXXXX')
@@ -1154,8 +1156,8 @@ async def summary(currency: Optional[str] = None, user: dict = Depends(get_curre
     tenant_id = user["tenant_id"]
     financials_visible = await can_view_financials(user)
 
-today_date = datetime.now().strftime("%Y-%m-%d")    
-    # طباعة للتأكد في الـ Terminal عما يبحث عنه السيرفر
+today_date = datetime.now(CLINIC_TZ).strftime("%Y-%m-%d")
+# طباعة للتأكد في الـ Terminal عما يبحث عنه السيرفر
     print("DEBUG TODAY DATE:", today_date)
 
     today_appointments = await db.appointments.count_documents({
