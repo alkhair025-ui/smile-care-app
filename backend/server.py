@@ -611,8 +611,13 @@ async def update_patient(pid: str, data: dict, user: dict = Depends(get_current_
 
 @api_router.delete("/patients/{pid}")
 async def delete_patient(pid: str, user: dict = Depends(get_current_user)):
+    scope = {"patient_id": pid, "tenant_id": user["tenant_id"]}
     await db.patients.delete_one({"id": pid, "tenant_id": user["tenant_id"]})
-    await db.tooth_charts.delete_many({"patient_id": pid, "tenant_id": user["tenant_id"]})
+    await db.tooth_charts.delete_many(scope)
+    await db.xrays.delete_many(scope)
+    await db.invoices.delete_many(scope)
+    await db.treatments.delete_many(scope)
+    await db.appointments.delete_many(scope)
     return {"ok": True}
 
 # ------------------------ Dental Chart ------------------------
@@ -744,6 +749,24 @@ async def add_treatment_session(pid: str, tid: str, data: SessionIn, user: dict 
     r = await db.treatments.update_one(
         {"id": tid, "patient_id": pid, "tenant_id": user["tenant_id"]},
         {"$push": {"sessions": session}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(404, "المعالجة غير موجودة")
+    doc = await db.treatments.find_one({"id": tid, "tenant_id": user["tenant_id"]})
+    return _clean(doc)
+
+@api_router.delete("/patients/{pid}/treatments/{tid}")
+async def delete_treatment(pid: str, tid: str, user: dict = Depends(get_current_user)):
+    r = await db.treatments.delete_one({"id": tid, "patient_id": pid, "tenant_id": user["tenant_id"]})
+    if r.deleted_count == 0:
+        raise HTTPException(404, "المعالجة غير موجودة")
+    return {"ok": True}
+
+@api_router.delete("/patients/{pid}/treatments/{tid}/sessions/{sid}")
+async def delete_treatment_session(pid: str, tid: str, sid: str, user: dict = Depends(get_current_user)):
+    r = await db.treatments.update_one(
+        {"id": tid, "patient_id": pid, "tenant_id": user["tenant_id"]},
+        {"$pull": {"sessions": {"id": sid}}},
     )
     if r.matched_count == 0:
         raise HTTPException(404, "المعالجة غير موجودة")

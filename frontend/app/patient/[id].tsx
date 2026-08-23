@@ -105,13 +105,10 @@ export default function PatientDetail() {
     if (selectedTeeth.length === 0 || savingTreatment) return;
     setSavingTreatment(true);
     try {
-      // Color the selected teeth on the chart with the chosen treatment type.
       const teeth = [...selectedTeeth].sort((a, b) => a - b);
-      for (const tooth of teeth) {
-        const updated = await api.setTooth(id!, { tooth, condition: activeCondition, note: chart[tooth]?.note || '' });
-        setChart((c) => ({ ...c, [tooth]: updated }));
-      }
       // Create the treatment record (with an initial session) and open its session view.
+      // The chart itself is NOT permanently colored — the treatment lives in the log/sessions,
+      // so the chart returns to its normal (clean) state for future treatments.
       const t = await api.createTreatment(id!, { teeth, condition: activeCondition, name: labelMap[activeCondition] || activeCondition });
       setTreatments((prev) => [t, ...prev]);
       // Reset the chart back to its normal state so new treatments can be started.
@@ -136,6 +133,44 @@ export default function PatientDetail() {
       console.warn('addFollowUp error', e?.message);
     } finally { setAddingSess(false); }
   };
+
+  // ---- Safe deletes (with confirmation) ----
+  const [confirmState, setConfirmState] = useState<{ title: string; message: string; onConfirm: () => Promise<void> } | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
+
+  const runConfirm = async () => {
+    if (!confirmState) return;
+    setConfirmBusy(true);
+    try { await confirmState.onConfirm(); setConfirmState(null); }
+    catch (e: any) { console.warn('confirm action error', e?.message); }
+    finally { setConfirmBusy(false); }
+  };
+
+  const askDeletePatient = () => setConfirmState({
+    title: 'حذف المريض',
+    message: `سيتم حذف «${patient?.full_name}» وكل بياناته (المخطط، الأشعة، الفواتير، المعالجات، المواعيد) نهائياً. هل أنت متأكد؟`,
+    onConfirm: async () => { await api.deletePatient(id!); router.back(); },
+  });
+
+  const askDeleteTreatment = (t: any) => setConfirmState({
+    title: 'حذف المعالجة',
+    message: `سيتم حذف معالجة «${labelMap[t.condition] || t.name}» وكل جلساتها نهائياً. هل أنت متأكد؟`,
+    onConfirm: async () => {
+      await api.deleteTreatment(id!, t.id);
+      setTreatments((prev) => prev.filter((x) => x.id !== t.id));
+      setActiveTreatment((cur: any) => (cur && cur.id === t.id ? null : cur));
+    },
+  });
+
+  const askDeleteSession = (s: any) => setConfirmState({
+    title: 'حذف الجلسة',
+    message: `سيتم حذف جلسة «${s.name}» نهائياً. هل أنت متأكد؟`,
+    onConfirm: async () => {
+      const updated = await api.deleteTreatmentSession(id!, activeTreatment.id, s.id);
+      setActiveTreatment(updated);
+      setTreatments((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
+    },
+  });
 
   const saveNotes = async () => {
     setSavingNotes(true);
@@ -210,7 +245,9 @@ export default function PatientDetail() {
           <Feather name="chevron-right" size={26} color={colors.onSurface} />
         </Pressable>
         <Text style={styles.headerTitle} numberOfLines={1}>{patient.full_name}</Text>
-        <View style={{ width: 26 }} />
+        <Pressable onPress={askDeletePatient} testID="pt-delete" hitSlop={8}>
+          <Feather name="trash-2" size={22} color={colors.error} />
+        </Pressable>
       </View>
 
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: spacing.xxxl }}>
@@ -307,6 +344,9 @@ export default function PatientDetail() {
                   <Text style={styles.trmtName}>{labelMap[t.condition] || t.name}</Text>
                   <Text style={styles.trmtMeta}>الأسنان: {(t.teeth || []).join('، ')} · {(t.sessions || []).length} جلسة · {String(t.created_at).slice(0, 10)}</Text>
                 </View>
+                <Pressable testID={`delete-treatment-${t.id}`} onPress={() => askDeleteTreatment(t)} hitSlop={8} style={styles.rowDeleteBtn}>
+                  <Feather name="trash-2" size={18} color={colors.error} />
+                </Pressable>
                 <Feather name="chevron-left" size={18} color={colors.muted} />
               </Pressable>
             ))
@@ -443,6 +483,9 @@ export default function PatientDetail() {
                       {s.note ? <Text style={styles.sessNote}>{s.note}</Text> : null}
                       <Text style={styles.sessDate}>{String(s.date).slice(0, 10)}</Text>
                     </View>
+                    <Pressable testID={`delete-session-${i}`} onPress={() => askDeleteSession(s)} hitSlop={8} style={styles.rowDeleteBtn}>
+                      <Feather name="trash-2" size={16} color={colors.error} />
+                    </Pressable>
                   </View>
                 ))}
 
@@ -467,6 +510,24 @@ export default function PatientDetail() {
                 )}
               </ScrollView>
             )}
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal visible={!!confirmState} transparent animationType="fade" onRequestClose={() => !confirmBusy && setConfirmState(null)}>
+        <Pressable style={styles.confirmOverlay} onPress={() => !confirmBusy && setConfirmState(null)}>
+          <Pressable style={styles.confirmSheet} onPress={() => {}}>
+            <View style={styles.confirmIcon}><Feather name="alert-triangle" size={26} color={colors.error} /></View>
+            <Text style={styles.confirmTitle}>{confirmState?.title}</Text>
+            <Text style={styles.confirmMsg}>{confirmState?.message}</Text>
+            <View style={styles.addActions}>
+              <Pressable testID="confirm-cancel" onPress={() => setConfirmState(null)} disabled={confirmBusy} style={[styles.addBtn2, styles.addBtnGhost]}>
+                <Text style={styles.addBtnGhostText}>إلغاء</Text>
+              </Pressable>
+              <Pressable testID="confirm-delete" onPress={runConfirm} disabled={confirmBusy} style={[styles.addBtn2, styles.confirmDeleteBtn]}>
+                {confirmBusy ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.addBtnPrimaryText}>حذف</Text>}
+              </Pressable>
+            </View>
           </Pressable>
         </Pressable>
       </Modal>
@@ -552,6 +613,13 @@ const styles = StyleSheet.create({
   sessForm: { marginTop: spacing.md },
   addSessBtn: { flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: spacing.sm, marginTop: spacing.md, paddingVertical: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.brand, borderStyle: 'dashed', backgroundColor: colors.brandTertiary },
   addSessText: { color: colors.brand, fontFamily: fontFamily.bold, fontSize: font.base },
+  rowDeleteBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.errorBg },
+  confirmSheet: { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.lg, width: '86%', maxWidth: 420, alignItems: 'center', gap: spacing.sm, alignSelf: 'center' },
+  confirmIcon: { width: 52, height: 52, borderRadius: 26, backgroundColor: colors.errorBg, alignItems: 'center', justifyContent: 'center', marginBottom: spacing.xs },
+  confirmTitle: { fontSize: font.lg, fontFamily: fontFamily.bold, color: colors.onSurface, textAlign: 'center' },
+  confirmMsg: { fontSize: font.sm, fontFamily: fontFamily.regular, color: colors.onSurfaceSecondary, textAlign: 'center', writingDirection: 'rtl', lineHeight: 20 },
+  confirmDeleteBtn: { backgroundColor: colors.error },
+  confirmOverlay: { flex: 1, backgroundColor: colors.overlay, alignItems: 'center', justifyContent: 'center', padding: spacing.lg },
   midDivider: { height: 1, backgroundColor: colors.border, marginVertical: spacing.md },
   tooth: { width: 32, height: 40, borderRadius: 6, borderWidth: 1, borderColor: colors.borderStrong, alignItems: 'center', justifyContent: 'center' },
   toothNum: { fontSize: 10, fontFamily: fontFamily.bold },
