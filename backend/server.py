@@ -1155,12 +1155,14 @@ async def summary(currency: Optional[str] = None, user: dict = Depends(get_curre
     financials_visible = await can_view_financials(user)
 
     total_patients = await db.patients.count_documents({"tenant_id": tenant_id})
-    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-    today_end = datetime.now().replace(hour=23, minute=59, second=59).isoformat()
-    today_appointments = await db.appointments.count_documents({
-        "tenant_id": tenant_id, "date": {"$gte": today_start, "$lte": today_end}
-    })
+    
     today_date = datetime.now().strftime("%Y-%m-%d")
+    today_appointments = await db.appointments.count_documents({
+        "tenant_id": tenant_id, 
+        "date": {"$regex": f"^{today_date}"},
+        "status": {"$ne": "cancelled"}
+    })
+    
     new_bookings = await db.appointments.count_documents({
         "tenant_id": tenant_id, "status": "pending"
     })
