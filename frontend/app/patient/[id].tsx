@@ -340,7 +340,10 @@ export default function PatientDetail() {
             </View>
           </Pressable>
         </Pressable>
-      </Modal>
+      </Modal>     
+    <Pressable onPress={() => setAddTypeOpen(true)} style={{ padding: 12, backgroundColor: colors.brand, borderRadius: radius.md, alignItems: 'center', margin: 15 }}>
+  <Text style={{ color: '#fff', fontFamily: fontFamily.bold }}>+ إضافة جلسة متابعة / علاج جديد</Text>
+</Pressable>
     </SafeAreaView>
   );
 }
