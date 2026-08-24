@@ -867,6 +867,15 @@ async def create_appointment(data: AppointmentIn, user: dict = Depends(get_curre
         p = await db.patients.find_one({"id": data.patient_id, "tenant_id": user["tenant_id"]})
         if p:
             data.patient_name = p["full_name"]
+       # Convert from UTC to Damascus (Asia/Damascus) before saving
+    try:
+        dt = datetime.fromisoformat(data.date.replace('Z', '+00:00'))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(CLINIC_TZ)
+        data.date = dt.strftime("%Y-%m-%dT%H:%M:%S")  # Save as Damascus time without Z
+    except Exception:
+        pass
+
     doc = {"id": str(uuid.uuid4()), "tenant_id": user["tenant_id"],
            "created_at": datetime.now(timezone.utc).isoformat(), **data.dict()}
     await db.appointments.insert_one(doc.copy())
