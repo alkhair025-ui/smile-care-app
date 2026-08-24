@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams } from 'expo-router';
+import { usePathname } from 'expo-router';
 import { colors, spacing, radius, font, fontFamily, shadow } from '@/src/theme';
 import { api } from '@/src/api';
 
@@ -31,7 +32,11 @@ function to12h(hhmm: string) {
 }
 
 export default function BookingPortal() {
-  const { tenant_id } = useLocalSearchParams<{ tenant_id: string }>();
+  const params = useLocalSearchParams<{ tenant_id: string }>();
+  const pathname = usePathname();
+  // Fallback: read tenant_id from URL path if useLocalSearchParams fails on web
+  const tenant_id = params.tenant_id || (pathname ? pathname.split('/').pop() : '');
+  console.log('BookingPortal tenant_id:', tenant_id, 'pathname:', pathname);
   const [clinic, setClinic] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
