@@ -1079,9 +1079,10 @@ async def public_book(tenant_id: str, data: PublicBookingIn):
         raise HTTPException(400, "الوقت المختار غير متاح ضمن ساعات العمل")
     iso = f"{data.date}T{data.time}:00"
     # prevent double booking
-    clash = await db.appointments.find_one({
-        "tenant_id": tenant_id, "date": {"$regex": f"^{data.date}T{data.time}"},
+       clash = await db.appointments.find_one({
+        "tenant_id": tenant_id, "date": iso,
         "status": {"$ne": "cancelled"},
+    })
     })
     if clash:
         raise HTTPException(409, "هذا الموعد محجوز، اختر وقتاً آخر")
