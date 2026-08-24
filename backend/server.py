@@ -858,7 +858,18 @@ async def list_appointments(user: dict = Depends(get_current_user), date_from: s
             filt["date"]["$gte"] = date_from
         if date_to:
             filt["date"]["$lte"] = date_to
-    items = await db.appointments.find(filt).sort("date", 1).to_list(500)
+       items = await db.appointments.find(filt).sort("date", 1).to_list(500)
+
+    # Convert stored UTC times to Damascus local time before returning
+    for item in items:
+        try:
+            dt = datetime.fromisoformat(item["date"].replace('Z', '+00:00'))
+            if dt.tzinfo is not None:
+                dt = dt.astimezone(CLINIC_TZ)
+            item["date"] = dt.strftime("%Y-%m-%dT%H:%M:%S")
+        except Exception:
+            pass
+
     return [_clean(i) for i in items]
 
 @api_router.post("/appointments")
