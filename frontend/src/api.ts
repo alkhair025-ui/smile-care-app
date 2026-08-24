@@ -102,6 +102,8 @@ export const api = {
   addTreatmentSession: (pid: string, tid: string, data: any) => request<any>(`/patients/${pid}/treatments/${tid}/sessions`, { method: 'POST', body: data }),
   deleteTreatment: (pid: string, tid: string) => request<any>(`/patients/${pid}/treatments/${tid}`, { method: 'DELETE' }),
   deleteTreatmentSession: (pid: string, tid: string, sid: string) => request<any>(`/patients/${pid}/treatments/${tid}/sessions/${sid}`, { method: 'DELETE' }),
+  deleteTreatmentById: (tid: string) => request<any>(`/treatments/${tid}`, { method: 'DELETE' }),
+  deleteSessionById: (sid: string) => request<any>(`/sessions/${sid}`, { method: 'DELETE' }),
 
   listXrays: (pid: string) => request<any[]>(`/patients/${pid}/xrays`),
   uploadXray: async (pid: string, uri: string, name: string, type: string) => {
