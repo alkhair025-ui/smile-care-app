@@ -1301,8 +1301,8 @@ async def profit_report(period: str = "monthly", year: int = 0, user: dict = Dep
             continue
         cur = inv.get("currency", "SYP") or "SYP"
         g = groups.setdefault(cur, {"currency": cur, "revenue": 0, "expenses": 0})
-        if inv.get("kind") == "patient":
-            g["revenue"] += inv.get("total", 0)
+         if inv.get("kind") == "patient":
+         g["revenue"] += inv.get("paid", 0)
         else:
             g["expenses"] += inv.get("total", 0)
     by_currency = []
