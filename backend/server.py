@@ -1179,12 +1179,11 @@ async def summary(currency: Optional[str] = None, user: dict = Depends(get_curre
 
     today_date = datetime.now(CLINIC_TZ).strftime("%Y-%m-%d")
 
-    today_appointments = await db.appointments.count_documents({
+     today_appointments = await db.appointments.count_documents({
         "tenant_id": tenant_id,
-        "date": {"$regex": f"^{today_date}"},
+        "date": {"$gte": f"{today_date}T00:00:00", "$lte": f"{today_date}T23:59:59"},
         "status": {"$ne": "cancelled"}
     })
-    
     new_bookings = await db.appointments.count_documents({
         "tenant_id": tenant_id, "status": "pending"
     })
