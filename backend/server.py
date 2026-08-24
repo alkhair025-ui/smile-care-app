@@ -1186,7 +1186,7 @@ async def summary(currency: Optional[str] = None, user: dict = Depends(get_curre
     new_bookings = await db.appointments.count_documents({
         "tenant_id": tenant_id, "status": "pending"
     })
-
+    total_patients = await db.patients.count_documents({"tenant_id": tenant_id})
     result = {
         "total_patients": total_patients,
         "today_appointments": today_appointments,
