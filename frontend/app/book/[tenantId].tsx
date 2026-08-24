@@ -17,13 +17,7 @@ function nextDays(n: number) {
   }
   return days;
 }
-const DAY_NAMES = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
-const dateKey = (d: Date) => {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return ${y}-${m}-${day};
-};
+const dateKey = (d: Date) => d.toISOString().slice(0, 10);
 
 // Convert "HH:MM" (24h) to Arabic 12-hour label, e.g. "1:00 ظهراً", "2:30 مساءً".
 function to12h(hhmm: string) {
