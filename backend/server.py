@@ -775,6 +775,29 @@ async def delete_treatment_session(pid: str, tid: str, sid: str, user: dict = De
     doc = await db.treatments.find_one({"id": tid, "tenant_id": user["tenant_id"]})
     return _clean(doc)
 
+# Standalone delete endpoints (no patient_id required — used by frontend)
+@api_router.delete("/treatments/{tid}")
+async def delete_treatment_standalone(tid: str, user: dict = Depends(get_current_user)):
+    """Delete a treatment and all its embedded sessions."""
+    r = await db.treatments.delete_one({"id": tid, "tenant_id": user["tenant_id"]})
+    if r.deleted_count == 0:
+        raise HTTPException(404, "المعالجة غير موجودة")
+    return {"ok": True, "message": "تم حذف المعالجة وجلساتها"}
+
+@api_router.delete("/sessions/{sid}")
+async def delete_session_standalone(sid: str, user: dict = Depends(get_current_user)):
+    """Delete a single session from its parent treatment."""
+    treatment = await db.treatments.find_one(
+        {"sessions.id": sid, "tenant_id": user["tenant_id"]}
+    )
+    if not treatment:
+        raise HTTPException(404, "الجلسة غير موجودة")
+    await db.treatments.update_one(
+        {"id": treatment["id"], "tenant_id": user["tenant_id"]},
+        {"$pull": {"sessions": {"id": sid}}},
+    )
+    return {"ok": True, "message": "تم حذف الجلسة"}
+
 # ------------------------ X-Rays ------------------------
 
 @api_router.post("/patients/{pid}/xrays")
