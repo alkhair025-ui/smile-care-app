@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Modal, TextInput, Linking, Platform } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, TouchableOpacity, ActivityIndicator, Modal, TextInput, Linking, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
@@ -114,7 +114,7 @@ export default function PatientDetail() {
       // Reset the chart back to its normal state so new treatments can be started.
       setSelectedTeeth([]);
       setActiveCondition('healthy');
-      setActiveTreatment(t);
+      setActiveTreatment(null);
     } catch (e: any) {
       console.warn('saveTreatment error', e?.message);
     } finally { setSavingTreatment(false); }
@@ -156,7 +156,7 @@ export default function PatientDetail() {
     title: 'حذف المعالجة',
     message: `سيتم حذف معالجة «${labelMap[t.condition] || t.name}» وكل جلساتها نهائياً. هل أنت متأكد؟`,
     onConfirm: async () => {
-      await api.deleteTreatment(id!, t.id);
+      await api.deleteTreatmentById(t.id);
       setTreatments((prev) => prev.filter((x) => x.id !== t.id));
       setActiveTreatment((cur: any) => (cur && cur.id === t.id ? null : cur));
     },
@@ -166,9 +166,15 @@ export default function PatientDetail() {
     title: 'حذف الجلسة',
     message: `سيتم حذف جلسة «${s.name}» نهائياً. هل أنت متأكد؟`,
     onConfirm: async () => {
-      const updated = await api.deleteTreatmentSession(id!, activeTreatment.id, s.id);
-      setActiveTreatment(updated);
-      setTreatments((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
+      await api.deleteSessionById(s.id);
+      setActiveTreatment((cur: any) => {
+        if (!cur) return cur;
+        return { ...cur, sessions: (cur.sessions || []).filter((sess: any) => sess.id !== s.id) };
+      });
+      setTreatments((prev) => prev.map((t) => {
+        if (t.id !== activeTreatment.id) return t;
+        return { ...t, sessions: (t.sessions || []).filter((sess: any) => sess.id !== s.id) };
+      }));
     },
   });
 
@@ -241,13 +247,13 @@ export default function PatientDetail() {
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} testID="pt-back" hitSlop={8}>
+        <TouchableOpacity onPress={() => router.back()} activeOpacity={0.6} style={styles.headerBtn}>
           <Feather name="chevron-right" size={26} color={colors.onSurface} />
-        </Pressable>
+        </TouchableOpacity>
         <Text style={styles.headerTitle} numberOfLines={1}>{patient.full_name}</Text>
-        <Pressable onPress={askDeletePatient} testID="pt-delete" hitSlop={8}>
+        <TouchableOpacity onPress={askDeletePatient} activeOpacity={0.6} style={styles.headerBtn}>
           <Feather name="trash-2" size={22} color={colors.error} />
-        </Pressable>
+        </TouchableOpacity>
       </View>
 
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: spacing.xxxl }}>
@@ -344,9 +350,9 @@ export default function PatientDetail() {
                   <Text style={styles.trmtName}>{labelMap[t.condition] || t.name}</Text>
                   <Text style={styles.trmtMeta}>الأسنان: {(t.teeth || []).join('، ')} · {(t.sessions || []).length} جلسة · {String(t.created_at).slice(0, 10)}</Text>
                 </View>
-                <Pressable testID={`delete-treatment-${t.id}`} onPress={() => askDeleteTreatment(t)} hitSlop={8} style={styles.rowDeleteBtn}>
+                <TouchableOpacity onPress={() => askDeleteTreatment(t)} activeOpacity={0.6} style={styles.rowDeleteBtn}>
                   <Feather name="trash-2" size={18} color={colors.error} />
-                </Pressable>
+                </TouchableOpacity>
                 <Feather name="chevron-left" size={18} color={colors.muted} />
               </Pressable>
             ))
@@ -454,7 +460,90 @@ export default function PatientDetail() {
             </View>
           </Pressable>
         </Pressable>
-      </Modal>     
+      </Modal>
+
+      {/* ═══════ Confirm Delete Modal ═══════ */}
+      <Modal visible={!!confirmState} transparent animationType="fade" onRequestClose={() => setConfirmState(null)}>
+        <View style={styles.confirmOverlay}>
+          <View style={styles.confirmSheet}>
+            <View style={styles.confirmIcon}><Feather name="alert-triangle" size={26} color={colors.error} /></View>
+            <Text style={styles.confirmTitle}>{confirmState?.title}</Text>
+            <Text style={styles.confirmMsg}>{confirmState?.message}</Text>
+            <View style={{ flexDirection: 'row-reverse', gap: spacing.sm, marginTop: spacing.lg, width: '100%' }}>
+              <Pressable onPress={() => setConfirmState(null)} style={[styles.addBtn2, styles.addBtnGhost, { flex: 1 }]}>
+                <Text style={styles.addBtnGhostText}>إلغاء</Text>
+              </Pressable>
+              <Pressable onPress={runConfirm} disabled={confirmBusy} style={[styles.addBtn2, styles.confirmDeleteBtn, { flex: 1 }]}>
+                {confirmBusy ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.addBtnPrimaryText}>حذف</Text>}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ═══════ Treatment Sessions Modal ═══════ */}
+      <Modal visible={!!activeTreatment} transparent animationType="slide" onRequestClose={() => setActiveTreatment(null)}>
+        <Pressable style={styles.sheetOverlay} onPress={() => setActiveTreatment(null)}>
+          <Pressable style={styles.sessSheet} onPress={() => {}}>
+            <View style={styles.sessHeader}>
+              <Pressable onPress={() => setActiveTreatment(null)} hitSlop={8}><Feather name="x" size={22} color={colors.onSurface} /></Pressable>
+              <Text style={styles.sheetTitle}>جلسات المعالجة</Text>
+              <Pressable onPress={() => activeTreatment && askDeleteTreatment(activeTreatment)} hitSlop={8}>
+                <Feather name="trash-2" size={20} color={colors.error} />
+              </Pressable>
+            </View>
+            <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingTop: 0 }}>
+              <View style={styles.sessInfoCard}>
+                <View style={styles.sessInfoRow}>
+                  <View style={[styles.condDot, { backgroundColor: colorMap[activeTreatment?.condition] || colors.brand, borderColor: colors.border }]} />
+                  <Text style={styles.sessTitle}>{labelMap[activeTreatment?.condition] || activeTreatment?.name || ''}</Text>
+                </View>
+                <Text style={styles.sessTeeth}>الأسنان: {(activeTreatment?.teeth || []).join('، ')}</Text>
+              </View>
+              {(activeTreatment?.sessions || []).length === 0 ? (
+                <Text style={styles.emptyInline}>لا توجد جلسات مسجّلة</Text>
+              ) : (
+                (activeTreatment?.sessions || []).map((s: any, idx: number) => (
+                  <View key={s.id} style={styles.sessRow}>
+                    <View style={styles.sessBullet}><Text style={styles.sessBulletText}>{idx + 1}</Text></View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.sessName}>{s.name}</Text>
+                      {s.note ? <Text style={styles.sessNote}>{s.note}</Text> : null}
+                      <Text style={styles.sessDate}>{String(s.date).slice(0, 10)}</Text>
+                    </View>
+                    <TouchableOpacity onPress={() => askDeleteSession(s)} activeOpacity={0.6} style={styles.rowDeleteBtn}>
+                      <Feather name="trash-2" size={16} color={colors.error} />
+                    </TouchableOpacity>
+                  </View>
+                ))
+              )}
+              <Pressable onPress={() => setShowSessForm(true)} style={styles.addSessBtn}>
+                <Feather name="plus" size={16} color={colors.brand} />
+                <Text style={styles.addSessText}>إضافة جلسة متابعة</Text>
+              </Pressable>
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* ═══════ Add Session Form Modal ═══════ */}
+      <Modal visible={showSessForm && !!activeTreatment} transparent animationType="fade" onRequestClose={() => setShowSessForm(false)}>
+        <Pressable style={styles.sheetOverlay} onPress={() => setShowSessForm(false)}>
+          <Pressable style={styles.addSheet} onPress={() => {}}>
+            <Text style={styles.sheetTitle}>جلسة متابعة جديدة</Text>
+            <TextInput value={sessName} onChangeText={setSessName} placeholder="اسم الجلسة (مثال: متابعة حشوة)" placeholderTextColor={colors.muted} style={styles.addInput} />
+            <TextInput value={sessNote} onChangeText={setSessNote} placeholder="ملاحظات (اختياري)" placeholderTextColor={colors.muted} style={[styles.addInput, { minHeight: 60 }]} multiline />
+            <View style={styles.addActions}>
+              <Pressable onPress={() => setShowSessForm(false)} style={[styles.addBtn2, styles.addBtnGhost]}>
+                <Text style={styles.addBtnGhostText}>إلغاء</Text>
+              </Pressable>
+              <Pressable onPress={addFollowUp} disabled={addingSess || !sessName.trim()} style={[styles.addBtn2, styles.addBtnPrimary, (!sessName.trim() || addingSess) && { opacity: 0.5 }]}>
+                {addingSess ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.addBtnPrimaryText}>حفظ الجلسة</Text>}
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -586,4 +675,5 @@ const styles = StyleSheet.create({
   addBtnPrimaryText: { color: '#fff', fontFamily: fontFamily.bold },
   addBtnGhost: { backgroundColor: colors.surfaceSecondary },
   addBtnGhostText: { color: colors.onSurfaceSecondary, fontFamily: fontFamily.bold },
+  headerBtn: { padding: 10, minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
 });
