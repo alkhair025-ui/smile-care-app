@@ -1056,7 +1056,7 @@ async def public_slots(tenant_id: str, date: str):
         raise HTTPException(404, "العيادة غير موجودة")
     booked = await db.appointments.find({
         "tenant_id": tenant_id,
-        "date": {"$gte": f"{date}T00:00", "$lte": f"{date}T23:59"},
+        "date": {"$gte": f"{date}T00:00:00", "$lte": f"{date}T23:59:59"},
         "status": {"$ne": "cancelled"},
     }).to_list(200)
     taken = {a["date"][11:16] for a in booked}
