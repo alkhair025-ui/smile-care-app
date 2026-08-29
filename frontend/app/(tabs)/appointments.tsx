@@ -134,10 +134,29 @@ function Chip({ label, active, onPress, color, tid }: any) {
   );
 }
 
+// ✅ الإصلاح: new Date().toISOString() يرجع الوقت بتوقيت UTC (مثلاً "...T21:15...Z")،
+// وبعد ما كنا نقص أول 16 حرف (.slice(0, 16)) كنا نحذف حرف الـ "Z" منها،
+// فتتحول القيمة لسلسلة "عائمة" بدون منطقة زمنية. السيرفر يتعامل مع أي سلسلة
+// بدون منطقة زمنية على أنها ب "توقيت دمشق أصلاً" ويخزّنها كما هي — فكانت
+// الساعة/التاريخ الافتراضيين يظهران بتوقيت UTC بدل دمشق (فرق 3 ساعات)،
+// وقرب منتصف ليل دمشق كان هذا يوقع الموعد الافتراضي على تاريخ اليوم
+// السابق (بتوقيت UTC) بدل اليوم الفعلي بتوقيت دمشق.
+// الحل: نبني القيمة الافتراضية من الوقت الحالي الحقيقي بتوقيت دمشق مباشرة.
+function damascusNowInputValue() {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Damascus',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(now);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value || '';
+  return `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}`;
+}
+
 function AddApptModal({ visible, onClose, onCreated }: any) {
   const [patients, setPatients] = useState<any[]>([]);
   const [patient, setPatient] = useState<any>(null);
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 16));
+  const [date, setDate] = useState(damascusNowInputValue());
   const [reason, setReason] = useState('');
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
@@ -160,7 +179,7 @@ function AddApptModal({ visible, onClose, onCreated }: any) {
         reason,
         status: 'scheduled',
       });
-      setPatient(null); setDate(new Date().toISOString().slice(0, 16)); setReason('');
+      setPatient(null); setDate(damascusNowInputValue()); setReason('');
       onCreated();
     } catch (e: any) { setErr(e.message); } finally { setLoading(false); }
   };
@@ -190,7 +209,7 @@ function AddApptModal({ visible, onClose, onCreated }: any) {
                 ))}
               </ScrollView>
 
-              <Text style={styles.label}>التاريخ والوقت (YYYY-MM-DDTHH:MM)</Text>
+              <Text style={styles.label}>التاريخ والوقت (بتوقيت دمشق) YYYY-MM-DDTHH:MM</Text>
               <TextInput testID="appt-date" value={date} onChangeText={setDate} style={styles.input} placeholder="2026-05-30T10:00" placeholderTextColor={colors.muted} />
 
               <Text style={[styles.label, { marginTop: spacing.md }]}>السبب</Text>
