@@ -873,14 +873,36 @@ async def delete_xray(xray_id: str, user: dict = Depends(get_current_user)):
 # ------------------------ Appointments ------------------------
 
 @api_router.get("/appointments")
-async def list_appointments(user: dict = Depends(get_current_user), date_from: str = "", date_to: str = ""):
+async def list_appointments(user: dict = Depends(get_current_user), date_from: str = "", date_to: str = "", today: bool = False):
     filt = {"tenant_id": user["tenant_id"]}
-    if date_from or date_to:
+
+    # ✅ الإصلاح: العيادة تستخدم مقارنة نصية (string) على حقل date لتحديد
+    # "من تاريخ" و"إلى تاريخ". المواعيد تُخزَّن كـ "YYYY-MM-DDTHH:MM:SS"
+    # (فيها وقت). فإذا وصل date_to كتاريخ مجرّد "YYYY-MM-DD" (بدون وقت) —
+    # وهذا بالضبط ما يرسله تبويب "اليوم" في الواجهة — فإن مقارنة النصوص في
+    # MongoDB تعتبر "2026-08-30" أصغر من أي موعد بنفس اليوم مثل
+    # "2026-08-30T09:00:00" (لأن السلسلة الأقصر تُقارَن كأصغر عند تطابق
+    # البداية). النتيجة: كل مواعيد اليوم تُستبعد فوراً بمجرد أن ينقلب
+    # التاريخ عند منتصف الليل ويصير date_to = تاريخ اليوم الجديد المجرّد —
+    # فتظهر القائمة فاضية وكأن الحجوزات "انمسحت"، مع أنها موجودة فعلياً
+    # بقاعدة البيانات. الحل: توسيع أي تاريخ مجرّد ليغطي اليوم كاملاً.
+    def _expand_day_bound(value: str, end_of_day: bool) -> str:
+        v = (value or "").strip()
+        if len(v) == 10 and v.count("-") == 2 and "T" not in v:
+            return f"{v}T23:59:59.999999" if end_of_day else f"{v}T00:00:00"
+        return v
+
+    if today:
+        # مصدر وحيد للحقيقة لـ"اليوم": يُحسب من توقيت دمشق على السيرفر،
+        # بغض النظر عن ساعة أو منطقة الجهاز/المتصفح عند الطبيب أو المساعد.
+        today_str = datetime.now(CLINIC_TZ).strftime("%Y-%m-%d")
+        filt["date"] = {"$gte": f"{today_str}T00:00:00", "$lte": f"{today_str}T23:59:59.999999"}
+    elif date_from or date_to:
         filt["date"] = {}
         if date_from:
-            filt["date"]["$gte"] = date_from
+            filt["date"]["$gte"] = _expand_day_bound(date_from, end_of_day=False)
         if date_to:
-            filt["date"]["$lte"] = date_to
+            filt["date"]["$lte"] = _expand_day_bound(date_to, end_of_day=True)
     items = await db.appointments.find(filt).sort("date", 1).to_list(500)
 
     # Convert stored UTC times to Damascus local time before returning
@@ -946,11 +968,15 @@ async def create_invoice(data: InvoiceIn, user: dict = Depends(get_current_user)
         raise HTTPException(403, "لا تملك صلاحية إنشاء فواتير")
     if data.total == 0 and data.items:
         data.total = sum(i.quantity * i.unit_price for i in data.items)
+    # ✅ إصلاح إضافي بنفس السياق: كان التاريخ الافتراضي للفاتورة (لو ما
+    # أرسلته الواجهة) يُخزَّن بتوقيت UTC، بينما "دخل اليوم" بالتقرير يقارنه
+    # بتاريخ دمشق (today_date) — فكانت فواتير آخر النهار بتوقيت دمشق تُحسب
+    # ضمن "أمس" في UTC ولا تظهر بدخل اليوم. صار الافتراضي الآن بتوقيت دمشق.
     doc = {"id": str(uuid.uuid4()), "tenant_id": user["tenant_id"],
            "created_at": datetime.now(timezone.utc).isoformat(),
-           "date": data.date or datetime.now(timezone.utc).isoformat(),
+           "date": data.date or datetime.now(CLINIC_TZ).isoformat(),
            **data.dict()}
-    doc["date"] = data.date or datetime.now(timezone.utc).isoformat()
+    doc["date"] = data.date or datetime.now(CLINIC_TZ).isoformat()
     await db.invoices.insert_one(doc.copy())
     return _clean(doc)
 
