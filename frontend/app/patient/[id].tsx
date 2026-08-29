@@ -56,6 +56,11 @@ export default function PatientDetail() {
   const [sessName, setSessName] = useState('');
   const [sessNote, setSessNote] = useState('');
   const [addingSess, setAddingSess] = useState(false);
+  // ---- Edit personal info states ----
+  const [editing, setEditing] = useState(false);
+  const [editData, setEditData] = useState<any>({});
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState('');
 
   const { colorMap, labelMap, conditions } = useMemo(() => buildTreatmentMaps(customTypes), [customTypes]);
 
@@ -185,6 +190,21 @@ export default function PatientDetail() {
     finally { setSavingNotes(false); }
   };
 
+  // ---- Save personal info edit ----
+  const saveEdit = async () => {
+    setSavingEdit(true);
+    setEditError('');
+    try {
+      await api.updatePatient(id!, editData);
+      setPatient(editData);
+      setEditing(false);
+    } catch (e: any) {
+      setEditError(e?.message || 'تعذّر حفظ التعديلات');
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
   const pickXray = async () => {
     setXrayError('');
     if (Platform.OS !== 'web') {
@@ -251,25 +271,60 @@ export default function PatientDetail() {
           <Feather name="chevron-right" size={26} color={colors.onSurface} />
         </TouchableOpacity>
         <Text style={styles.headerTitle} numberOfLines={1}>{patient.full_name}</Text>
-        <TouchableOpacity onPress={askDeletePatient} activeOpacity={0.6} style={styles.headerBtn}>
-          <Feather name="trash-2" size={22} color={colors.error} />
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <TouchableOpacity onPress={() => { setEditing(true); setEditData({ ...patient }); setEditError(''); }} activeOpacity={0.6} style={styles.headerBtn}>
+            <Feather name="edit-3" size={22} color={colors.brand} />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={askDeletePatient} activeOpacity={0.6} style={styles.headerBtn}>
+            <Feather name="trash-2" size={22} color={colors.error} />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: spacing.xxxl }}>
         {/* Personal details */}
         <SectionCard icon="user" title="المعلومات الشخصية">
           {([
-            ['الهاتف', patient.phone], ['البريد', patient.email],
-            ['تاريخ الميلاد', patient.date_of_birth], ['الجنس', patient.gender],
-            ['العنوان', patient.address], ['التاريخ المرضي', patient.medical_history],
-            ['الحساسية', patient.allergies], ['الأدوية', patient.medications], ['ملاحظات عامة', patient.notes],
-          ] as [string, string][]).map(([l, v]) => (
-            <View key={l} style={styles.infoRow}>
-              <Text style={styles.infoLabel}>{l}</Text>
-              <Text style={styles.infoVal}>{v || '—'}</Text>
+            ['الاسم الكامل', 'full_name', patient.full_name],
+            ['الهاتف', 'phone', patient.phone],
+            ['البريد', 'email', patient.email],
+            ['تاريخ الميلاد', 'date_of_birth', patient.date_of_birth],
+            ['الجنس', 'gender', patient.gender],
+            ['العنوان', 'address', patient.address],
+            ['التاريخ المرضي', 'medical_history', patient.medical_history],
+            ['الحساسية', 'allergies', patient.allergies],
+            ['الأدوية', 'medications', patient.medications],
+            ['ملاحظات عامة', 'notes', patient.notes],
+          ] as [string, string, string][]).map(([label, key, value]) => (
+            <View key={key} style={styles.infoRow}>
+              <Text style={styles.infoLabel}>{label}</Text>
+              {editing ? (
+                <TextInput
+                  testID={`edit-${key}`}
+                  value={editData[key] || ''}
+                  onChangeText={(t) => setEditData((prev: any) => ({ ...prev, [key]: t }))}
+                  style={styles.editInput}
+                  placeholder={label}
+                  placeholderTextColor={colors.muted}
+                />
+              ) : (
+                <Text style={styles.infoVal}>{value || '—'}</Text>
+              )}
             </View>
           ))}
+          {editing && (
+            <>
+              {editError ? <Text style={styles.editError}>{editError}</Text> : null}
+              <View style={styles.editActions}>
+                <Pressable onPress={() => setEditing(false)} style={[styles.addBtn2, styles.addBtnGhost]}>
+                  <Text style={styles.addBtnGhostText}>إلغاء</Text>
+                </Pressable>
+                <Pressable onPress={saveEdit} disabled={savingEdit} style={[styles.addBtn2, styles.addBtnPrimary]}>
+                  {savingEdit ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.addBtnPrimaryText}>حفظ التعديلات</Text>}
+                </Pressable>
+              </View>
+            </>
+          )}
         </SectionCard>
 
         {/* Doctor notes */}
@@ -583,6 +638,9 @@ const styles = StyleSheet.create({
   infoRow: { flexDirection: 'row-reverse', justifyContent: 'space-between', paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.divider },
   infoLabel: { color: colors.muted, fontFamily: fontFamily.regular, textAlign: 'right', writingDirection: 'rtl' },
   infoVal: { color: colors.onSurface, fontFamily: fontFamily.medium, textAlign: 'right', writingDirection: 'rtl', flex: 1, marginLeft: spacing.md },
+  editInput: { flex: 1, marginLeft: spacing.md, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, color: colors.onSurface, fontFamily: fontFamily.regular, textAlign: 'right', writingDirection: 'rtl' },
+  editActions: { flexDirection: 'row-reverse', gap: spacing.sm, marginTop: spacing.md },
+  editError: { color: colors.error, fontFamily: fontFamily.regular, textAlign: 'right', marginTop: spacing.sm },
   notesInput: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, padding: spacing.md, minHeight: 100, color: colors.onSurface, fontFamily: fontFamily.regular, textAlign: 'right', writingDirection: 'rtl', textAlignVertical: 'top' },
   savePill: { alignSelf: 'flex-start', marginTop: spacing.md, backgroundColor: colors.brand, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, borderRadius: radius.pill },
   savePillText: { color: '#fff', fontFamily: fontFamily.bold },
