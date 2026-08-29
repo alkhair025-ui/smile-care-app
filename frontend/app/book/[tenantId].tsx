@@ -10,17 +10,50 @@ import { api } from '@/src/api';
 
 const DAY_NAMES = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
 
+// ✅ الإصلاح: نفس مشكلة الملف السابق بالضبط، بس هون بتأثر مباشرة على
+// المريض وهو عم يحجز. كان الكود يبني قائمة الأيام بالتوقيت المحلي لجهاز
+// المريض (new Date(), setDate...) لكن يحوّل كل يوم لنص "YYYY-MM-DD" عبر
+// d.toISOString().slice(0, 10) — وهاد بيرجع التاريخ بتوقيت UTC مش دمشق.
+// النتيجة: إذا كان الوقت الفعلي بدمشق بين الساعة 00:00 و 03:00 (بعد
+// منتصف الليل مباشرة)، فإن toISOString() بيرجّع تاريخ "أمس" (لأن UTC
+// لسا ما وصل لمنتصف الليل)، بينما الاسم/الرقم المعروضين للمريض
+// (DAY_NAMES[d.getDay()], d.getDate()) بيحسبوا بالتوقيت المحلي وبيبينوا
+// "اليوم" الصحيح. يعني المريض يشوف على الشاشة "اليوم"، بس فعلياً
+// بيحجز بتاريخ "أمس" بقاعدة البيانات — فيظهر الموعد غايب من عرض
+// "مواعيد اليوم" عند الطبيب. نفس المشكلة ممكن تصير بأي وقت من اليوم إذا
+// كان جهاز المريض مضبوط على منطقة زمنية غير دمشق (مسافر مثلاً).
+// الحل: نحسب كل التواريخ بثبات من تقويم دمشق مباشرة (عبر Intl)، بغض
+// النظر عن منطقة جهاز المريض أو وقت اليوم.
+
+function damascusDateKey(d: Date) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Damascus', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+}
+
+function damascusTodayAnchor(): Date {
+  // "مرساة" منتصف ليل UTC لنفس تاريخ اليوم الحالي بدمشق — نستخدمها بعدين
+  // لتوليد الأيام التالية بأمان (بدون أي التباس بالمنطقة الزمنية).
+  const key = damascusDateKey(new Date()); // "YYYY-MM-DD" بتقويم دمشق
+  const [y, m, day] = key.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, day));
+}
+
 function nextDays(n: number) {
-  const days = [];
-  const base = new Date();
+  const anchor = damascusTodayAnchor();
+  const days: Date[] = [];
   for (let i = 0; i < n; i++) {
-    const d = new Date(base);
-    d.setDate(base.getDate() + i);
-    days.push(d);
+    days.push(new Date(anchor.getTime() + i * 86400000));
   }
   return days;
 }
-const dateKey = (d: Date) => d.toISOString().slice(0, 10);
+// كل الأيام هون "مرساة" بمنتصف ليل UTC تمثّل تاريخ دمشق — فنقرأها بدوال
+// UTC (getUTCDate / getUTCDay) بدل الدوال المحلية، لأنها مش Date عادي
+// مبني من ساعة الجهاز.
+const dayKey = (d: Date) => {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
 
 // Convert "HH:MM" (24h) to Arabic 12-hour label, e.g. "1:00 ظهراً", "2:30 مساءً".
 function to12h(hhmm: string) {
@@ -40,7 +73,7 @@ export default function BookingPortal() {
   const [clinic, setClinic] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
-  const [selectedDay, setSelectedDay] = useState<Date>(new Date());
+  const [selectedDay, setSelectedDay] = useState<Date>(damascusTodayAnchor());
   const [slots, setSlots] = useState<any[]>([]);
   const [slotsLoading, setSlotsLoading] = useState(false);
   const [selectedTime, setSelectedTime] = useState('');
@@ -61,7 +94,7 @@ export default function BookingPortal() {
   const loadSlots = useCallback(async (day: Date) => {
     if (!tenant_id) return;
     setSlotsLoading(true); setSelectedTime('');
-    try { const res = await api.publicSlots(tenant_id, dateKey(day)); setSlots(res.slots || []); }
+    try { const res = await api.publicSlots(tenant_id, dayKey(day)); setSlots(res.slots || []); }
     catch { setSlots([]); } finally { setSlotsLoading(false); }
   }, [tenant_id]);
 
@@ -73,7 +106,7 @@ export default function BookingPortal() {
     if (!selectedTime) { setErr('يرجى اختيار وقت متاح'); return; }
     setSubmitting(true);
     try {
-      await api.publicBook(tenant_id!, { full_name: name, phone, date: dateKey(selectedDay), time: selectedTime, reason });
+      await api.publicBook(tenant_id!, { full_name: name, phone, date: dayKey(selectedDay), time: selectedTime, reason });
       setDone(true);
       loadSlots(selectedDay);
     } catch (e: any) { setErr(e.message || 'تعذّر الحجز'); } finally { setSubmitting(false); }
@@ -88,7 +121,7 @@ export default function BookingPortal() {
         <SafeAreaView style={styles.center}>
           <View style={styles.successBadge}><Feather name="check" size={40} color={colors.brand} /></View>
           <Text style={styles.successTitle}>تم استلام طلب حجزك!</Text>
-          <Text style={styles.successText}>سيتواصل معك فريق {clinic?.clinic_name || 'العيادة'} لتأكيد الموعد يوم {DAY_NAMES[selectedDay.getDay()]} الساعة {to12h(selectedTime)}.</Text>
+          <Text style={styles.successText}>سيتواصل معك فريق {clinic?.clinic_name || 'العيادة'} لتأكيد الموعد يوم {DAY_NAMES[selectedDay.getUTCDay()]} الساعة {to12h(selectedTime)}.</Text>
           <Pressable testID="book-again" onPress={() => { setDone(false); setSelectedTime(''); }} style={styles.againBtn}>
             <Text style={styles.againText}>حجز موعد آخر</Text>
           </Pressable>
@@ -113,11 +146,11 @@ export default function BookingPortal() {
           <Text style={styles.section}>اختر اليوم</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: spacing.sm, paddingVertical: spacing.sm }}>
             {nextDays(14).map((d) => {
-              const active = dateKey(d) === dateKey(selectedDay);
+              const active = dayKey(d) === dayKey(selectedDay);
               return (
-                <Pressable key={dateKey(d)} testID={`day-${dateKey(d)}`} onPress={() => setSelectedDay(d)} style={[styles.dayChip, { backgroundColor: active ? colors.brand : colors.surface, borderColor: active ? colors.brand : colors.border }]}>
-                  <Text style={[styles.dayName, { color: active ? '#fff' : colors.muted }]}>{DAY_NAMES[d.getDay()]}</Text>
-                  <Text style={[styles.dayNum, { color: active ? '#fff' : colors.onSurface }]}>{d.getDate()}</Text>
+                <Pressable key={dayKey(d)} testID={`day-${dayKey(d)}`} onPress={() => setSelectedDay(d)} style={[styles.dayChip, { backgroundColor: active ? colors.brand : colors.surface, borderColor: active ? colors.brand : colors.border }]}>
+                  <Text style={[styles.dayName, { color: active ? '#fff' : colors.muted }]}>{DAY_NAMES[d.getUTCDay()]}</Text>
+                  <Text style={[styles.dayNum, { color: active ? '#fff' : colors.onSurface }]}>{d.getUTCDate()}</Text>
                 </Pressable>
               );
             })}
