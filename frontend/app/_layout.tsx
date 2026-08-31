@@ -1,6 +1,6 @@
 import { Stack, useRouter, useSegments } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { I18nManager, LogBox, Platform, View, ActivityIndicator, StyleSheet } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useFonts } from 'expo-font';
@@ -45,30 +45,15 @@ function AuthGate() {
 export default function RootLayout() {
   const [iconsLoaded, iconErr] = useIconFonts();
   // Load Tajawal directly from Google Fonts CDN (no @expo-google-fonts pkg).
-  // ⚠️ ملاحظة: روابط gstatic المباشرة (.ttf) بتتغير الهاش تبعها من فترة لفترة من طرف جوجل،
-  // فممكن تصير 404 بدون إنذار. الحل الدائم هو تحميلها عبر رابط CSS الثابت (css2) بدل الروابط المباشرة.
   const [fontsLoaded, fontsErr] = useFonts({
     Tajawal_400: 'https://fonts.gstatic.com/s/tajawal/v11/Iurf6YBj_oCad4k1nzGBC5xLhLE.ttf',
     Tajawal_500: 'https://fonts.gstatic.com/s/tajawal/v11/Iura6YBj_oCad4k1l_6gLrZjiLlJ-G0.ttf',
     Tajawal_700: 'https://fonts.gstatic.com/s/tajawal/v11/Iura6YBj_oCad4k1l6qkLrZjiLlJ-G0.ttf',
   });
-
-  // ⚠️ إصلاح حرج: لا نسمح لفشل/تعليق تحميل الخطوط (شبكة بطيئة، رابط 404، إلخ)
-  // بتعليق التطبيق بالكامل إلى الأبد. بعد مهلة قصيرة نتابع بغض النظر عن حالة الخطوط.
-  const [timedOut, setTimedOut] = useState(false);
-  useEffect(() => {
-    const t = setTimeout(() => setTimedOut(true), 3000);
-    return () => clearTimeout(t);
-  }, []);
-
-  const iconsReady = iconsLoaded || iconErr;
-  const fontsReady = fontsLoaded || fontsErr;
-  const ready = (iconsReady && fontsReady) || timedOut;
-
+  const ready = (iconsLoaded || iconErr) && (fontsLoaded || fontsErr);
   useEffect(() => {
     if (ready) SplashScreen.hideAsync();
   }, [ready]);
-
   if (!ready) return null;
   return (
     <SafeAreaProvider>
