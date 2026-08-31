@@ -3,9 +3,8 @@ import { View, Text, StyleSheet, ScrollView, ActivityIndicator, I18nManager } fr
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams } from 'expo-router';
 
-// ⚠️ عدّل هاد السطر إذا كان اسم متغير الـ API عندك مختلف بملف src/api.ts
-// المفروض يطابق نفس الدومين يلي بيستخدمه باقي التطبيق (مثال: https://your-app.up.railway.app)
-const API_BASE = process.env.EXPO_PUBLIC_API_URL || '';
+// نفس متغير الـ API الأساسي المستخدم بباقي التطبيق (src/api.ts) — شامل "/api" بآخره أصلاً
+import { API_BASE_URL } from '@/src/api';
 
 type PortalData = {
   clinic: { name: string; phone: string; address: string; slug: string };
@@ -39,7 +38,7 @@ export default function PatientPortal() {
     setLoading(true);
     setError('');
     try {
-      const res = await fetch(`${API_BASE}/api/public/patient/${token}`);
+      const res = await fetch(`${API_BASE_URL}/public/patient/${token}`);
       if (!res.ok) {
         if (res.status === 404) throw new Error('الرابط غير صالح أو منتهي الصلاحية');
         throw new Error('تعذّر تحميل البيانات، حاول مجدداً');
