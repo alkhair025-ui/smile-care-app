@@ -1,6 +1,5 @@
 """
 Eayadati (عيادتي) - Dental Clinic Management Backend
-Multi-tenant SaaS: doctors register as tenant owners and manage assistants.
 """
 import os
 import uuid
@@ -8,10 +7,11 @@ import logging
 import secrets
 import hashlib
 import colorsys
+import re
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
-from typing import List, Optional, Literal, Annotated
+from typing import List, Optional, Literal
 
 import jwt
 import bcrypt
@@ -21,7 +21,7 @@ from email.message import EmailMessage
 from io import BytesIO
 from PIL import Image, ImageOps
 from bson import ObjectId
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request, status, UploadFile, File
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, status, UploadFile, File
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response
 from fastapi.security import OAuth2PasswordBearer
@@ -29,7 +29,6 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field
-from zoneinfo import ZoneInfo
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -38,9 +37,8 @@ MONGO_URL = os.environ['MONGO_URL']
 DB_NAME = os.environ['DB_NAME']
 JWT_SECRET = os.environ.get('JWT_SECRET', 'eayadati-dev-secret-change-in-prod-64chars-XXXXXXXXXXXXXXXXXXXXXXX')
 JWT_ALGORITHM = 'HS256'
-ACCESS_TOKEN_HOURS = 24 * 7  # 7 days
+ACCESS_TOKEN_HOURS = 24 * 7
 
-# Object Storage — S3-compatible via boto3, with local-filesystem fallback.
 APP_NAME = "eayadati"
 S3_ENDPOINT_URL = (os.environ.get("S3_ENDPOINT_URL") or "").strip() or None
 S3_REGION = os.environ.get("S3_REGION", "us-east-1")
@@ -50,7 +48,6 @@ S3_BUCKET = os.environ.get("S3_BUCKET")
 LOCAL_STORAGE_DIR = os.environ.get("LOCAL_STORAGE_DIR", str(ROOT_DIR / "uploads"))
 _s3_client = None
 
-# Email — standard SMTP (smtplib).
 SMTP_HOST = os.environ.get("SMTP_HOST")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 SMTP_USER = os.environ.get("SMTP_USER")
@@ -70,6 +67,47 @@ api_router = APIRouter(prefix="/api")
 oauth2 = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
 Role = Literal["doctor", "assistant", "super_admin"]
+
+# ------------------------ Timezone Helpers ------------------------
+
+def now_damascus() -> datetime:
+    return datetime.now(CLINIC_TZ)
+
+def damascus_today_str() -> str:
+    return now_damascus().strftime("%Y-%m-%d")
+
+def damascus_day_name(dt: datetime) -> str:
+    return dt.strftime("%a")
+
+def parse_to_damascus(date_str: str, time_str: str = "00:00") -> datetime:
+    full_str = f"{date_str}T{time_str}:00" if "T" not in date_str else date_str
+    try:
+        dt = datetime.fromisoformat(full_str.replace('Z', '+00:00'))
+    except Exception:
+        dt = datetime.strptime(full_str[:19], "%Y-%m-%dT%H:%M:%S")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=CLINIC_TZ)
+    else:
+        dt = dt.astimezone(CLINIC_TZ)
+    return dt
+
+def format_damascus(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+def get_work_slots(start_str: str, end_str: str, interval: int = 30) -> List[str]:
+    slots = []
+    try:
+        h1, m1 = map(int, start_str.split(":"))
+        h2, m2 = map(int, end_str.split(":"))
+        current = h1 * 60 + m1
+        end = h2 * 60 + m2
+        while current < end:
+            hh, mm = divmod(current, 60)
+            slots.append(f"{hh:02d}:{mm:02d}")
+            current += interval
+    except Exception:
+        pass
+    return slots
 
 # ------------------------ Models ------------------------
 
@@ -105,16 +143,20 @@ class TokenOut(BaseModel):
 class SettingsUpdate(BaseModel):
     show_financials_to_assistants: Optional[bool] = None
     clinic_name: Optional[str] = None
+    clinic_slug: Optional[str] = None
     clinic_address: Optional[str] = None
     clinic_phone: Optional[str] = None
-    clinic_location: Optional[dict] = None  # {lat, lng}
+    clinic_location: Optional[dict] = None
     working_hours: Optional[str] = None
+    work_start: Optional[str] = Field(None, description="وقت البدء HH:MM")
+    work_end: Optional[str] = Field(None, description="وقت الانتهاء HH:MM")
+    work_days: Optional[List[str]] = Field(None, description="أيام العمل مثلاً ['Sat','Sun']")
 
 class PatientIn(BaseModel):
     full_name: str
     phone: str = ""
     email: str = ""
-    date_of_birth: str = ""  # ISO
+    date_of_birth: str = ""
     gender: str = ""
     address: str = ""
     medical_history: str = ""
@@ -129,17 +171,17 @@ class PatientOut(PatientIn):
     created_at: str
 
 class ToothStateIn(BaseModel):
-    tooth: int  # FDI number 11-48
-    condition: str  # healthy/caries/filling/crown/extracted/missing/rct/implant
+    tooth: int
+    condition: str
     note: str = ""
 
 class AppointmentIn(BaseModel):
     patient_id: str
     patient_name: str = ""
-    date: str  # ISO datetime
+    date: str
     duration_minutes: int = 30
     reason: str = ""
-    status: str = "scheduled"  # scheduled/confirmed/completed/cancelled/no_show
+    status: str = "scheduled"
 
 class InvoiceItem(BaseModel):
     description: str
@@ -147,14 +189,14 @@ class InvoiceItem(BaseModel):
     unit_price: float = 0
 
 class InvoiceIn(BaseModel):
-    kind: str  # patient/purchase/expense/salary
+    kind: str
     patient_id: str = ""
-    party_name: str = ""  # patient/supplier/employee name
+    party_name: str = ""
     items: List[InvoiceItem] = []
     total: float = 0
     paid: float = 0
-    currency: str = "SYP"  # SYP or USD
-    date: str = ""  # ISO
+    currency: str = "SYP"
+    date: str = ""
     note: str = ""
 
 class InventoryItemIn(BaseModel):
@@ -172,9 +214,16 @@ class LabOrderIn(BaseModel):
     description: str = ""
     sent_at: str = ""
     expected_at: str = ""
-    status: str = "sent"  # sent/received/delivered
+    status: str = "sent"
     cost: float = 0
     paid: float = 0
+
+class PublicBookingIn(BaseModel):
+    full_name: str
+    phone: str
+    date: str
+    time: str
+    reason: str = ""
 
 # ------------------------ Auth helpers ------------------------
 
@@ -247,6 +296,24 @@ async def can_view_financials(user: dict) -> bool:
     tenant = await get_tenant(user["tenant_id"])
     return bool(tenant.get("show_financials_to_assistants", False))
 
+# ------------------------ Slug Helpers ------------------------
+
+def slugify(text: str) -> str:
+    if not text:
+        return ""
+    text = text.lower().strip()
+    text = re.sub(r'[^\w\s-]', '', text)
+    text = re.sub(r'[\s_]+', '-', text)
+    text = re.sub(r'-+', '-', text)
+    return text.strip('-')
+
+async def get_tenant_by_identifier(identifier: str) -> Optional[dict]:
+    t = await db.tenants.find_one({"clinic_slug": identifier.lower()})
+    if t:
+        return t
+    t = await db.tenants.find_one({"tenant_id": identifier})
+    return t
+
 # ------------------------ Object Storage ------------------------
 
 def _use_s3() -> bool:
@@ -281,11 +348,9 @@ def _put_object(path: str, data: bytes, content_type: str) -> dict:
     return {"path": path, "size": len(data)}
 
 def _compress_image(data: bytes, max_dim: int = 1600, quality: int = 60) -> Optional[bytes]:
-    """Downscale (longest side <= max_dim) and JPEG-encode to reduce storage size
-    while preserving diagnostic detail. Returns None if not a decodable image."""
     try:
         img = Image.open(BytesIO(data))
-        img = ImageOps.exif_transpose(img)  # honor orientation
+        img = ImageOps.exif_transpose(img)
         if img.mode not in ("RGB", "L"):
             img = img.convert("RGB")
         w, h = img.size
@@ -321,16 +386,15 @@ async def startup():
     await db.users.create_index("email", unique=True)
     await db.users.create_index([("tenant_id", 1), ("role", 1)])
     await db.tenants.create_index("tenant_id", unique=True)
+    await db.tenants.create_index("clinic_slug", unique=True, sparse=True)
     await db.patients.create_index([("tenant_id", 1), ("full_name", 1)])
     await db.appointments.create_index([("tenant_id", 1), ("date", 1)])
     await db.invoices.create_index([("tenant_id", 1), ("date", -1)])
     await db.inventory.create_index([("tenant_id", 1), ("name", 1)])
     await db.lab_orders.create_index([("tenant_id", 1)])
     await db.reset_tokens.create_index("expires_at", expireAfterSeconds=0)
-    # Seed demo account
     if not await db.users.find_one({"email": "doctor@demo.com"}):
         await _seed_demo()
-    # Seed / sync super admin owner account
     if SUPERADMIN_EMAIL and SUPERADMIN_PASSWORD:
         existing = await db.users.find_one({"email": SUPERADMIN_EMAIL})
         if not existing:
@@ -373,13 +437,16 @@ async def _seed_demo():
         "tenant_id": tenant_id,
         "owner_user_id": r.inserted_id,
         "clinic_name": "عيادة الابتسامة",
+        "clinic_slug": "smile-care",
         "clinic_address": "شارع الاستقلال - عمّان",
         "clinic_phone": "+962790000000",
         "clinic_location": {"lat": 31.9539, "lng": 35.9106},
         "show_financials_to_assistants": False,
+        "work_start": "08:00",
+        "work_end": "23:00",
+        "work_days": ["Sat", "Sun", "Mon", "Tue", "Wed", "Thu"],
         "created_at": datetime.now(timezone.utc),
     })
-    # Seed patients
     patients = [
         {"full_name": "محمد علي", "phone": "+962791111111", "date_of_birth": "1985-03-12", "gender": "ذكر", "medical_history": "لا يوجد", "allergies": "بنسلين", "medications": ""},
         {"full_name": "فاطمة الزهراء", "phone": "+962792222222", "date_of_birth": "1992-07-24", "gender": "أنثى", "medical_history": "سكري", "allergies": "", "medications": "ميتفورمين"},
@@ -394,21 +461,20 @@ async def _seed_demo():
             "email": "", "address": "", "notes": "",
             **p,
         })
-    # Appointments
-    today = datetime.now()
+    today = now_damascus()
     for i, pid in enumerate(p_ids):
+        dt = today + timedelta(days=i, hours=9+i)
         await db.appointments.insert_one({
             "id": str(uuid.uuid4()),
             "tenant_id": tenant_id,
             "patient_id": pid,
             "patient_name": patients[i]["full_name"],
-            "date": (today + timedelta(days=i, hours=9+i)).isoformat(),
+            "date": format_damascus(dt),
             "duration_minutes": 30,
             "reason": ["فحص دوري", "تنظيف جير", "حشوة"][i],
             "status": "scheduled",
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
-    # Invoices
     invoice_seeds = [
         {"kind": "patient", "party_name": "محمد علي", "patient_id": p_ids[0], "items": [{"description": "فحص + أشعة", "quantity": 1, "unit_price": 50}], "total": 50, "paid": 50},
         {"kind": "patient", "party_name": "فاطمة الزهراء", "patient_id": p_ids[1], "items": [{"description": "حشوة ضوئية", "quantity": 2, "unit_price": 40}], "total": 80, "paid": 80},
@@ -425,7 +491,6 @@ async def _seed_demo():
             "created_at": datetime.now(timezone.utc).isoformat(),
             **inv,
         })
-    # Inventory
     inv_seeds = [
         {"name": "قفازات طبية", "unit": "علبة", "quantity": 20, "min_quantity": 5, "unit_price": 5, "category": "مستلزمات"},
         {"name": "مادة حشو ضوئي", "unit": "أنبوب", "quantity": 3, "min_quantity": 5, "unit_price": 25, "category": "مواد"},
@@ -438,7 +503,6 @@ async def _seed_demo():
             "created_at": datetime.now(timezone.utc).isoformat(),
             **it,
         })
-    # Lab
     await db.lab_orders.insert_one({
         "id": str(uuid.uuid4()),
         "tenant_id": tenant_id,
@@ -472,8 +536,6 @@ async def register(data: RegisterIn):
         "role": "doctor",
         "disabled": False,
         "created_at": now,
-        # New signups start on a free trial automatically, with no expiry until the
-        # super admin manually converts them to a paid subscription.
         "sub_status": "trial",
         "sub_plan": "",
         "sub_start": now.isoformat(),
@@ -489,7 +551,11 @@ async def register(data: RegisterIn):
         "tenant_id": tenant_id,
         "owner_user_id": r.inserted_id,
         "clinic_name": data.clinic_name,
+        "clinic_slug": slugify(data.clinic_name),
         "show_financials_to_assistants": False,
+        "work_start": "08:00",
+        "work_end": "23:00",
+        "work_days": ["Sat", "Sun", "Mon", "Tue", "Wed", "Thu"],
         "created_at": datetime.now(timezone.utc),
     }
     await db.tenants.insert_one(tenant_doc)
@@ -541,6 +607,14 @@ async def delete_assistant(user_id: str, doctor: dict = Depends(require_role("do
 @api_router.patch("/settings")
 async def update_settings(data: SettingsUpdate, doctor: dict = Depends(require_role("doctor"))):
     update = {k: v for k, v in data.dict().items() if v is not None}
+    if "clinic_slug" in update and update["clinic_slug"]:
+        update["clinic_slug"] = slugify(update["clinic_slug"])
+        existing = await db.tenants.find_one({
+            "clinic_slug": update["clinic_slug"],
+            "tenant_id": {"$ne": doctor["tenant_id"]}
+        })
+        if existing:
+            raise HTTPException(409, "هذا الرابط مستخدم من عيادة أخرى")
     if update:
         await db.tenants.update_one({"tenant_id": doctor["tenant_id"]}, {"$set": update})
     tenant = await get_tenant(doctor["tenant_id"])
@@ -554,6 +628,15 @@ async def get_settings(user: dict = Depends(get_current_user)):
     tenant.pop("_id", None)
     tenant.pop("owner_user_id", None)
     return tenant
+
+@api_router.get("/check-slug/{slug}")
+async def check_slug(slug: str, exclude_tenant: str = ""):
+    clean = slugify(slug)
+    filt = {"clinic_slug": clean}
+    if exclude_tenant:
+        filt["tenant_id"] = {"$ne": exclude_tenant}
+    existing = await db.tenants.find_one(filt)
+    return {"available": not existing, "slug": clean}
 
 # ------------------------ Patients ------------------------
 
@@ -588,7 +671,6 @@ async def get_patient(pid: str, user: dict = Depends(get_current_user)):
 
 @api_router.get("/patients/{pid}/portal")
 async def get_patient_portal(pid: str, user: dict = Depends(get_current_user)):
-    """Return (or lazily create) the public portal token + link for a patient."""
     p = await db.patients.find_one({"id": pid, "tenant_id": user["tenant_id"]})
     if not p:
         raise HTTPException(404, "المريض غير موجود")
@@ -640,10 +722,8 @@ async def set_tooth(pid: str, data: ToothStateIn, user: dict = Depends(get_curre
     doc = await db.tooth_charts.find_one({"patient_id": pid, "tenant_id": user["tenant_id"], "tooth": data.tooth})
     return _clean(doc)
 
-# ------------------------ Treatment Types (custom, per-tenant) ------------------------
+# ------------------------ Treatment Types ------------------------
 
-# Built-in tooth-condition colors (mirror of frontend theme.ts). Custom colors must
-# stay clearly distinct from these AND from each other.
 BUILTIN_TOOTH_COLORS = [
     "#FFFFFF", "#A84A42", "#4A7065", "#B58548",
     "#6B7876", "#B0C4BC", "#8B5CF6", "#334F46",
@@ -660,12 +740,6 @@ def _color_distance(c1, c2) -> float:
     return sum((a - b) ** 2 for a, b in zip(c1, c2)) ** 0.5
 
 def generate_distinct_color(used_hex: list) -> str:
-    """Pick a vivid color whose distance to every used color is maximal.
-
-    Sweeps the full hue circle at fixed saturation/lightness and returns the
-    candidate that is furthest (in RGB space) from all previously used colors,
-    guaranteeing no repeat or near-duplicate with existing treatment colors.
-    """
     used_rgb = []
     for hx in used_hex:
         try:
@@ -711,10 +785,10 @@ async def create_treatment_type(data: TreatmentTypeIn, doctor: dict = Depends(re
     )
     return new_type
 
-# ------------------------ Treatment sessions (clinical follow-ups) ------------------------
+# ------------------------ Treatment sessions ------------------------
 
 class TreatmentCreateIn(BaseModel):
-    teeth: list[int]
+    teeth: list
     condition: str
     name: str = ""
 
@@ -775,10 +849,8 @@ async def delete_treatment_session(pid: str, tid: str, sid: str, user: dict = De
     doc = await db.treatments.find_one({"id": tid, "tenant_id": user["tenant_id"]})
     return _clean(doc)
 
-# Standalone delete endpoints (no patient_id required — used by frontend)
 @api_router.delete("/treatments/{tid}")
 async def delete_treatment_standalone(tid: str, user: dict = Depends(get_current_user)):
-    """Delete a treatment and all its embedded sessions."""
     r = await db.treatments.delete_one({"id": tid, "tenant_id": user["tenant_id"]})
     if r.deleted_count == 0:
         raise HTTPException(404, "المعالجة غير موجودة")
@@ -786,7 +858,6 @@ async def delete_treatment_standalone(tid: str, user: dict = Depends(get_current
 
 @api_router.delete("/sessions/{sid}")
 async def delete_session_standalone(sid: str, user: dict = Depends(get_current_user)):
-    """Delete a single session from its parent treatment."""
     treatment = await db.treatments.find_one(
         {"sessions.id": sid, "tenant_id": user["tenant_id"]}
     )
@@ -810,7 +881,6 @@ async def upload_xray(pid: str, file: UploadFile = File(...), user: dict = Depen
         raise HTTPException(400, "الملف فارغ")
     ct = file.content_type or "image/jpeg"
     original_size = len(contents)
-    # Server-side compression safety-net: downscale + JPEG-encode to save storage.
     if ct.startswith("image/"):
         try:
             compressed = _compress_image(contents)
@@ -846,7 +916,6 @@ async def list_xrays(pid: str, user: dict = Depends(get_current_user)):
 
 @api_router.get("/xrays/{xray_id}/file")
 async def get_xray(xray_id: str, token: Optional[str] = None):
-    # Allow token via query for web <img> tags
     user = None
     if token:
         try:
@@ -873,48 +942,15 @@ async def delete_xray(xray_id: str, user: dict = Depends(get_current_user)):
 # ------------------------ Appointments ------------------------
 
 @api_router.get("/appointments")
-async def list_appointments(user: dict = Depends(get_current_user), date_from: str = "", date_to: str = "", today: bool = False):
+async def list_appointments(user: dict = Depends(get_current_user), date_from: str = "", date_to: str = ""):
     filt = {"tenant_id": user["tenant_id"]}
-
-    # ✅ الإصلاح: العيادة تستخدم مقارنة نصية (string) على حقل date لتحديد
-    # "من تاريخ" و"إلى تاريخ". المواعيد تُخزَّن كـ "YYYY-MM-DDTHH:MM:SS"
-    # (فيها وقت). فإذا وصل date_to كتاريخ مجرّد "YYYY-MM-DD" (بدون وقت) —
-    # وهذا بالضبط ما يرسله تبويب "اليوم" في الواجهة — فإن مقارنة النصوص في
-    # MongoDB تعتبر "2026-08-30" أصغر من أي موعد بنفس اليوم مثل
-    # "2026-08-30T09:00:00" (لأن السلسلة الأقصر تُقارَن كأصغر عند تطابق
-    # البداية). النتيجة: كل مواعيد اليوم تُستبعد فوراً بمجرد أن ينقلب
-    # التاريخ عند منتصف الليل ويصير date_to = تاريخ اليوم الجديد المجرّد —
-    # فتظهر القائمة فاضية وكأن الحجوزات "انمسحت"، مع أنها موجودة فعلياً
-    # بقاعدة البيانات. الحل: توسيع أي تاريخ مجرّد ليغطي اليوم كاملاً.
-    def _expand_day_bound(value: str, end_of_day: bool) -> str:
-        v = (value or "").strip()
-        if len(v) == 10 and v.count("-") == 2 and "T" not in v:
-            return f"{v}T23:59:59.999999" if end_of_day else f"{v}T00:00:00"
-        return v
-
-    if today:
-        # مصدر وحيد للحقيقة لـ"اليوم": يُحسب من توقيت دمشق على السيرفر،
-        # بغض النظر عن ساعة أو منطقة الجهاز/المتصفح عند الطبيب أو المساعد.
-        today_str = datetime.now(CLINIC_TZ).strftime("%Y-%m-%d")
-        filt["date"] = {"$gte": f"{today_str}T00:00:00", "$lte": f"{today_str}T23:59:59.999999"}
-    elif date_from or date_to:
+    if date_from or date_to:
         filt["date"] = {}
         if date_from:
-            filt["date"]["$gte"] = _expand_day_bound(date_from, end_of_day=False)
+            filt["date"]["$gte"] = date_from
         if date_to:
-            filt["date"]["$lte"] = _expand_day_bound(date_to, end_of_day=True)
+            filt["date"]["$lte"] = date_to
     items = await db.appointments.find(filt).sort("date", 1).to_list(500)
-
-    # Convert stored UTC times to Damascus local time before returning
-    for item in items:
-        try:
-            dt = datetime.fromisoformat(item["date"].replace('Z', '+00:00'))
-            if dt.tzinfo is not None:
-                dt = dt.astimezone(CLINIC_TZ)
-            item["date"] = dt.strftime("%Y-%m-%dT%H:%M:%S")
-        except Exception:
-            pass
-
     return [_clean(i) for i in items]
 
 @api_router.post("/appointments")
@@ -923,15 +959,8 @@ async def create_appointment(data: AppointmentIn, user: dict = Depends(get_curre
         p = await db.patients.find_one({"id": data.patient_id, "tenant_id": user["tenant_id"]})
         if p:
             data.patient_name = p["full_name"]
-    # Convert from UTC to Damascus (Asia/Damascus) before saving
-    try:
-        dt = datetime.fromisoformat(data.date.replace('Z', '+00:00'))
-        if dt.tzinfo is not None:
-            dt = dt.astimezone(CLINIC_TZ)
-        data.date = dt.strftime("%Y-%m-%dT%H:%M:%S")  # Save as Damascus time without Z
-    except Exception:
-        pass
-
+    dt = parse_to_damascus(data.date)
+    data.date = format_damascus(dt)
     doc = {"id": str(uuid.uuid4()), "tenant_id": user["tenant_id"],
            "created_at": datetime.now(timezone.utc).isoformat(), **data.dict()}
     await db.appointments.insert_one(doc.copy())
@@ -939,6 +968,9 @@ async def create_appointment(data: AppointmentIn, user: dict = Depends(get_curre
 
 @api_router.patch("/appointments/{aid}")
 async def update_appointment(aid: str, data: AppointmentIn, user: dict = Depends(get_current_user)):
+    if data.date:
+        dt = parse_to_damascus(data.date)
+        data.date = format_damascus(dt)
     await db.appointments.update_one({"id": aid, "tenant_id": user["tenant_id"]}, {"$set": data.dict()})
     a = await db.appointments.find_one({"id": aid, "tenant_id": user["tenant_id"]})
     if not a:
@@ -968,15 +1000,11 @@ async def create_invoice(data: InvoiceIn, user: dict = Depends(get_current_user)
         raise HTTPException(403, "لا تملك صلاحية إنشاء فواتير")
     if data.total == 0 and data.items:
         data.total = sum(i.quantity * i.unit_price for i in data.items)
-    # ✅ إصلاح إضافي بنفس السياق: كان التاريخ الافتراضي للفاتورة (لو ما
-    # أرسلته الواجهة) يُخزَّن بتوقيت UTC، بينما "دخل اليوم" بالتقرير يقارنه
-    # بتاريخ دمشق (today_date) — فكانت فواتير آخر النهار بتوقيت دمشق تُحسب
-    # ضمن "أمس" في UTC ولا تظهر بدخل اليوم. صار الافتراضي الآن بتوقيت دمشق.
     doc = {"id": str(uuid.uuid4()), "tenant_id": user["tenant_id"],
            "created_at": datetime.now(timezone.utc).isoformat(),
-           "date": data.date or datetime.now(CLINIC_TZ).isoformat(),
+           "date": data.date or datetime.now(timezone.utc).isoformat(),
            **data.dict()}
-    doc["date"] = data.date or datetime.now(CLINIC_TZ).isoformat()
+    doc["date"] = data.date or datetime.now(timezone.utc).isoformat()
     await db.invoices.insert_one(doc.copy())
     return _clean(doc)
 
@@ -1010,7 +1038,6 @@ async def delete_invoice(iid: str, doctor: dict = Depends(require_role("doctor")
 
 @api_router.post("/uploads/pdf")
 async def upload_pdf(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
-    """Doctor uploads a generated invoice PDF; returns a PUBLIC download link."""
     contents = await file.read()
     file_id = str(uuid.uuid4())
     obj_path = f"{APP_NAME}/public/{user['tenant_id']}/{file_id}.pdf"
@@ -1041,14 +1068,8 @@ async def get_public_file(file_id: str):
 
 # ------------------------ Public booking portal ------------------------
 
-WORK_START_HOUR = 8
-WORK_END_HOUR = 23  # clinic closes 11 PM; last 30-min slot starts 22:30, ends 23:00
-LAST_SLOT = "22:30"
-SLOT_MINUTES = 30
-
 @api_router.get("/public/patient/{token}")
 async def public_patient_portal(token: str):
-    """Auto-updating read-only patient portal: medical report, dental chart, invoices/payments."""
     p = await db.patients.find_one({"portal_token": token})
     if not p:
         raise HTTPException(404, "الرابط غير صالح")
@@ -1062,6 +1083,7 @@ async def public_patient_portal(token: str):
             "name": tenant.get("clinic_name", "العيادة"),
             "phone": tenant.get("clinic_phone", ""),
             "address": tenant.get("clinic_address", ""),
+            "slug": tenant.get("clinic_slug", ""),
         },
         "patient": {
             "full_name": p.get("full_name", ""),
@@ -1084,75 +1106,79 @@ async def public_patient_portal(token: str):
         },
     }
 
-@api_router.get("/public/clinic/{tenant_id}")
-async def public_clinic(tenant_id: str):
-    t = await db.tenants.find_one({"tenant_id": tenant_id})
+@api_router.get("/public/clinic/{identifier}")
+async def public_clinic(identifier: str):
+    t = await get_tenant_by_identifier(identifier)
     if not t:
         raise HTTPException(404, "العيادة غير موجودة")
     return {
-        "tenant_id": tenant_id,
+        "tenant_id": t["tenant_id"],
         "clinic_name": t.get("clinic_name", "العيادة"),
         "clinic_address": t.get("clinic_address", ""),
         "clinic_phone": t.get("clinic_phone", ""),
         "clinic_location": t.get("clinic_location"),
         "working_hours": t.get("working_hours", ""),
+        "slug": t.get("clinic_slug", ""),
+        "work_start": t.get("work_start", "08:00"),
+        "work_end": t.get("work_end", "23:00"),
+        "work_days": t.get("work_days", ["Sat", "Sun", "Mon", "Tue", "Wed", "Thu"]),
     }
 
-def _valid_slots() -> set:
-    s = set()
-    for h in range(WORK_START_HOUR, WORK_END_HOUR + 1):
-        for m in (0, SLOT_MINUTES):
-            hhmm = f"{h:02d}:{m:02d}"
-            if hhmm > LAST_SLOT:
-                continue
-            s.add(hhmm)
-    return s
-
-@api_router.get("/public/clinic/{tenant_id}/slots")
-async def public_slots(tenant_id: str, date: str):
-    """date = YYYY-MM-DD. Returns available HH:MM slots (08:00-22:30, 30-min) minus booked."""
-    t = await db.tenants.find_one({"tenant_id": tenant_id})
+@api_router.get("/public/clinic/{identifier}/slots")
+async def public_slots(identifier: str, date: str):
+    t = await get_tenant_by_identifier(identifier)
     if not t:
         raise HTTPException(404, "العيادة غير موجودة")
+    try:
+        dt = parse_to_damascus(date)
+        day_name = damascus_day_name(dt)
+        if day_name not in t.get("work_days", []):
+            return {"date": date, "slots": [], "message": "العيادة مغلقة هذا اليوم", "closed": True}
+    except Exception:
+        pass
+    work_start = t.get("work_start", "08:00")
+    work_end = t.get("work_end", "23:00")
     booked = await db.appointments.find({
-        "tenant_id": tenant_id,
+        "tenant_id": t["tenant_id"],
         "date": {"$regex": f"^{date}T"},
         "status": {"$ne": "cancelled"},
     }).to_list(200)
     taken = {a["date"][11:16] for a in booked}
-    slots = [{"time": hhmm, "available": hhmm not in taken} for hhmm in sorted(_valid_slots())]
-    return {"date": date, "slots": slots}
+    all_slots = get_work_slots(work_start, work_end)
+    slots = [{"time": s, "available": s not in taken} for s in all_slots]
+    return {"date": date, "slots": slots, "work_start": work_start, "work_end": work_end}
 
-class PublicBookingIn(BaseModel):
-    full_name: str
-    phone: str
-    date: str      # YYYY-MM-DD
-    time: str      # HH:MM
-    reason: str = ""
-
-@api_router.post("/public/clinic/{tenant_id}/book")
-async def public_book(tenant_id: str, data: PublicBookingIn):
-    t = await db.tenants.find_one({"tenant_id": tenant_id})
+@api_router.post("/public/clinic/{identifier}/book")
+async def public_book(identifier: str, data: PublicBookingIn):
+    t = await get_tenant_by_identifier(identifier)
     if not t:
         raise HTTPException(404, "العيادة غير موجودة")
-    if data.time not in _valid_slots():
+    try:
+        dt = parse_to_damascus(data.date)
+        day_name = damascus_day_name(dt)
+        if day_name not in t.get("work_days", []):
+            raise HTTPException(400, "العيادة مغلقة هذا اليوم")
+    except Exception:
+        pass
+    work_start = t.get("work_start", "08:00")
+    work_end = t.get("work_end", "23:00")
+    all_slots = get_work_slots(work_start, work_end)
+    if data.time not in all_slots:
         raise HTTPException(400, "الوقت المختار غير متاح ضمن ساعات العمل")
     iso = f"{data.date}T{data.time}:00"
-    # prevent double booking
     clash = await db.appointments.find_one({
-        "tenant_id": tenant_id, "date": iso,
+        "tenant_id": t["tenant_id"], "date": iso,
         "status": {"$ne": "cancelled"},
     })
     if clash:
         raise HTTPException(409, "هذا الموعد محجوز، اختر وقتاً آخر")
-    # find or create patient by phone
     patient = None
     if data.phone:
-        patient = await db.patients.find_one({"tenant_id": tenant_id, "phone": data.phone})
+        patient = await db.patients.find_one({"tenant_id": t["tenant_id"], "phone": data.phone})
     if not patient:
         pid = str(uuid.uuid4())
         patient = {
-            "id": pid, "tenant_id": tenant_id, "full_name": data.full_name, "phone": data.phone,
+            "id": pid, "tenant_id": t["tenant_id"], "full_name": data.full_name, "phone": data.phone,
             "email": "", "date_of_birth": "", "gender": "", "address": "",
             "medical_history": "", "allergies": "", "medications": "", "notes": "طلب حجز عبر الموقع",
             "doctor_notes": "", "portal_token": secrets.token_urlsafe(9),
@@ -1160,9 +1186,9 @@ async def public_book(tenant_id: str, data: PublicBookingIn):
         }
         await db.patients.insert_one(patient.copy())
     appt = {
-        "id": str(uuid.uuid4()), "tenant_id": tenant_id,
+        "id": str(uuid.uuid4()), "tenant_id": t["tenant_id"],
         "patient_id": patient["id"], "patient_name": data.full_name,
-        "date": iso, "duration_minutes": SLOT_MINUTES, "reason": data.reason or "حجز عبر الموقع",
+        "date": iso, "duration_minutes": 30, "reason": data.reason or "حجز عبر الموقع",
         "status": "pending", "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.appointments.insert_one(appt.copy())
@@ -1224,9 +1250,7 @@ async def delete_lab(lid: str, user: dict = Depends(get_current_user)):
 async def summary(currency: Optional[str] = None, user: dict = Depends(get_current_user)):
     tenant_id = user["tenant_id"]
     financials_visible = await can_view_financials(user)
-
-    today_date = datetime.now(CLINIC_TZ).strftime("%Y-%m-%d")
-
+    today_date = damascus_today_str()
     today_appointments = await db.appointments.count_documents({
         "tenant_id": tenant_id,
         "date": {"$gte": f"{today_date}T00:00:00", "$lte": f"{today_date}T23:59:59"},
@@ -1242,7 +1266,6 @@ async def summary(currency: Optional[str] = None, user: dict = Depends(get_curre
         "new_bookings": new_bookings,
         "financials_visible": financials_visible,
     }
-
     if user.get("role") == "doctor":
         d_left = _sub_days_left(user) if user.get("sub_status") == "subscribed" else None
         result["subscription"] = {
@@ -1252,21 +1275,15 @@ async def summary(currency: Optional[str] = None, user: dict = Depends(get_curre
             "days_left": d_left,
             "expiring_soon": (d_left is not None and 0 <= d_left <= SUB_ALERT_DAYS),
         }
-
     if financials_visible:
         invoices = await db.invoices.find({"tenant_id": tenant_id}).to_list(5000)
-
-        # Distinct currencies actually present in this account's records (SYP, USD first).
         currencies = sorted({(i.get("currency") or "SYP") for i in invoices},
                             key=lambda c: (c != "SYP", c != "USD", c))
         if not currencies:
             currencies = ["SYP"]
-        # Selected currency: requested one if valid, else the first available.
         cur = currency if (currency in currencies) else currencies[0]
         result["currencies"] = currencies
         result["currency"] = cur
-
-        # Only aggregate records that belong to the selected currency — never mix currencies.
         cinv = [i for i in invoices if (i.get("currency") or "SYP") == cur]
         revenue = sum(i.get("paid", 0) for i in cinv if i.get("kind") == "patient")
         purchases = sum(i.get("total", 0) for i in cinv if i.get("kind") == "purchase")
@@ -1284,8 +1301,6 @@ async def summary(currency: Optional[str] = None, user: dict = Depends(get_curre
             "expenses": expenses,
             "net_profit": revenue - purchases - salaries - expenses,
         })
-
-        # Monthly breakdown (last 6 months) — selected currency only
         now = datetime.now(timezone.utc)
         months = []
         for i in range(5, -1, -1):
@@ -1304,7 +1319,6 @@ async def summary(currency: Optional[str] = None, user: dict = Depends(get_curre
             except Exception:
                 pass
         result["monthly"] = months
-
     low_stock = await db.inventory.count_documents({
         "tenant_id": tenant_id,
         "$expr": {"$lte": ["$quantity", "$min_quantity"]}
@@ -1314,13 +1328,8 @@ async def summary(currency: Optional[str] = None, user: dict = Depends(get_curre
 
 @api_router.get("/reports/profit")
 async def profit_report(period: str = "monthly", year: int = 0, user: dict = Depends(get_current_user)):
-    """Profit report for a period: daily / weekly / monthly / yearly.
-    Groups revenue, expenses and net profit per currency to avoid mixing currencies.
-    For 'yearly', an explicit `year` (>= 2026) selects the calendar year.
-    """
     if not await can_view_financials(user):
         return {"financials_visible": False}
-
     now = datetime.now()
     cur_year = now.year
     if period == "daily":
@@ -1337,13 +1346,12 @@ async def profit_report(period: str = "monthly", year: int = 0, user: dict = Dep
         prefix = str(y)
         label = f"سنة {y}"
         in_range = lambda d: d[:4] == prefix
-    else:  # monthly (default)
+    else:
         prefix = now.strftime("%Y-%m")
         label = "هذا الشهر"
         in_range = lambda d: d[:7] == prefix
-
     invoices = await db.invoices.find({"tenant_id": user["tenant_id"]}).to_list(5000)
-    groups: dict = {}
+    groups = {}
     for inv in invoices:
         d = str(inv.get("date", ""))
         if not d or not in_range(d):
@@ -1358,7 +1366,7 @@ async def profit_report(period: str = "monthly", year: int = 0, user: dict = Dep
     for g in groups.values():
         g["net"] = g["revenue"] - g["expenses"]
         by_currency.append(g)
-    by_currency.sort(key=lambda g: g["currency"] != "SYP")  # SYP first
+    by_currency.sort(key=lambda g: g["currency"] != "SYP")
     return {
         "financials_visible": True,
         "period": period,
@@ -1367,8 +1375,7 @@ async def profit_report(period: str = "monthly", year: int = 0, user: dict = Dep
         "by_currency": by_currency,
     }
 
-
-# ------------------------ Email (standard SMTP) ------------------------
+# ------------------------ Email ------------------------
 
 def _send_email_sync(to: str, subject: str, html: str) -> None:
     if not (SMTP_HOST and SMTP_FROM):
@@ -1433,7 +1440,6 @@ def _hash_token(raw: str) -> str:
 @api_router.post("/auth/forgot-password")
 async def forgot_password(data: ForgotIn):
     user = await db.users.find_one({"email": data.email.lower()})
-    # Always return ok to avoid email enumeration
     if user:
         raw = secrets.token_urlsafe(32)
         await db.reset_tokens.insert_one({
@@ -1477,7 +1483,7 @@ class SubscriptionIn(BaseModel):
     plan: Optional[Literal["monthly", "quarterly", "semiannual", "annual"]] = None
 
 PLAN_DAYS = {"monthly": 30, "quarterly": 91, "semiannual": 182, "annual": 365}
-SUB_ALERT_DAYS = 14  # notify doctor + admin two weeks before expiry
+SUB_ALERT_DAYS = 14
 
 def _sub_days_left(u: dict):
     end = u.get("sub_end")
@@ -1492,8 +1498,6 @@ def _sub_days_left(u: dict):
     return (end_dt - datetime.now(timezone.utc)).days
 
 async def _apply_subscription(u: dict) -> dict:
-    """Lazily auto-disable a paid subscription that has passed its end date.
-    Runs on login and whenever the admin lists doctors, so no scheduler is needed."""
     if u.get("sub_status") == "subscribed" and u.get("sub_end"):
         try:
             end_dt = datetime.fromisoformat(u["sub_end"])
@@ -1552,7 +1556,7 @@ async def admin_set_subscription(user_id: str, data: SubscriptionIn, admin: dict
     if not target or target.get("role") != "doctor":
         raise HTTPException(404, "الطبيب غير موجود")
     now = datetime.now(timezone.utc)
-    update: dict = {"sub_status": data.status, "auto_disabled_at": None}
+    update = {"sub_status": data.status, "auto_disabled_at": None}
     if data.status == "subscribed":
         if not data.plan:
             raise HTTPException(400, "يرجى تحديد نوع الاشتراك")
@@ -1565,7 +1569,7 @@ async def admin_set_subscription(user_id: str, data: SubscriptionIn, admin: dict
         update["sub_start"] = now.isoformat()
         update["sub_end"] = None
         update["disabled"] = False
-    else:  # disabled (manual)
+    else:
         update["disabled"] = True
     await db.users.update_one({"_id": ObjectId(user_id)}, {"$set": update})
     entry = {
